@@ -173,8 +173,6 @@ class EvaluationArtifact(AgentArtifact):
     strengths: list[str] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     missing_points: list[str] = field(default_factory=list)
-    need_follow_up: bool = False
-    follow_up_target: Optional[str] = None
 
     def __init__(
         self,
@@ -187,8 +185,6 @@ class EvaluationArtifact(AgentArtifact):
         missing_points: Optional[list[str]] = None,
         strengths: Optional[list[str]] = None,
         confidence: float = 1.0,
-        need_follow_up: bool = False,
-        follow_up_target: Optional[str] = None,
     ):
         super().__init__(kind="evaluation", owner=owner, confidence=confidence)
         self.question_id = question_id
@@ -199,8 +195,6 @@ class EvaluationArtifact(AgentArtifact):
         self.evidence = evidence
         self.missing_points = missing_points or []
         self.strengths = strengths or []
-        self.need_follow_up = need_follow_up
-        self.follow_up_target = follow_up_target
 
 
 @dataclass

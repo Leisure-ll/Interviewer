@@ -7,7 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 
 
 def test_runtime_runs_question_answer_followup_and_report():
@@ -15,7 +16,7 @@ def test_runtime_runs_question_answer_followup_and_report():
 
 
 async def _runtime_smoke():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("s1")
 
     board = await runtime.run_until_waiting_or_done(board.session_id)
@@ -60,7 +61,7 @@ def test_tool_policy_denies_undeclared_tool():
 
 
 async def _tool_policy_smoke():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("s2")
     board = await runtime.run_until_waiting_or_done(board.session_id)
     assert board.current_stage == InterviewStage.LISTENING

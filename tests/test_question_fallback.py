@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from interview_agent_runtime.runtime import InterviewRuntime
+from conftest import make_mock_runtime
 from interview_agent_runtime.tools import Tool, ToolContext
 
 
@@ -16,7 +16,7 @@ def test_question_generation_falls_back_when_bank_empty():
 
 
 async def _case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     runtime.tool_registry.register(Tool("question_bank.search", "empty", empty_question_bank))
     board = await runtime.start_session("question-fallback")
     board = await runtime.run_until_waiting_or_done(board.session_id)

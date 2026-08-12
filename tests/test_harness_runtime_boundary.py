@@ -12,7 +12,9 @@ def test_harness_creates_runtime_with_injected_registries_and_policies():
     assert runtime.agent_registry is harness.agent_registry
     assert runtime.skill_registry is harness.skill_registry
     assert runtime.tool_policy is harness.tool_policy
+    assert runtime.tool_registry is harness.tool_registry
     assert runtime.checkpoint_store is harness.checkpoint_store
+    assert harness.llm_provider is not None
 
 
 def test_harness_does_not_control_runtime_state_machine():

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 
 
 def test_question_generation_uses_plan_dimension_and_bank():
@@ -10,7 +11,7 @@ def test_question_generation_uses_plan_dimension_and_bank():
 
 
 async def _case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("question-generation")
     board = await runtime.run_until_waiting_or_done(board.session_id)
 

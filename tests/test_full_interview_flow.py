@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 
 
 def test_full_java_agent_interview_flow_produces_evidence_driven_report():
@@ -10,7 +11,7 @@ def test_full_java_agent_interview_flow_produces_evidence_driven_report():
 
 
 async def _case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("full-flow")
     answers = [
         "用缓存。",

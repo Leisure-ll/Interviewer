@@ -10,6 +10,9 @@ class HarnessConfig:
     mode: str = "mock"
     skills_dir: Optional[Path] = None
     checkpoint_dir: Optional[Path] = None
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
 
     @classmethod
     def mock(cls) -> "HarnessConfig":

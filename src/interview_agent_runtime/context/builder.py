@@ -94,6 +94,9 @@ class AgentContextBuilder:
                 relevant_evidence=self._relevant_evidence(blackboard, blackboard.current_dimension),
                 current_dimension=blackboard.current_dimension,
                 follow_up_history=blackboard.follow_up_decisions[-self.budget.max_recent_questions :],
+                capability_summary=self.capability_summary(blackboard),
+                follow_up_budget=blackboard.follow_up_budget,
+                dimension_follow_up_budget=blackboard.current_dimension_follow_up_budget(),
             )
         if agent_name == "ReportAgent":
             return ReportAgentContext(

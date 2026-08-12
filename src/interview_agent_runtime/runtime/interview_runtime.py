@@ -4,18 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import uuid4
 
-from interview_agent_runtime.agents import (
-    EvaluatorAgent,
-    FollowUpAgent,
-    InterviewAgentRegistry,
-    PlannerAgent,
-    ProfileAgent,
-    QuestionAgent,
-    ReportAgent,
-)
+from interview_agent_runtime.agents import InterviewAgentRegistry
 from interview_agent_runtime.artifacts import AgentArtifact, AnswerArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
-from interview_agent_runtime.checkpoint import CheckpointStore, InMemoryCheckpointStore
+from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
 from interview_agent_runtime.runtime.execution_policy import ExecutionPolicy, TaskExecutor
@@ -23,7 +15,6 @@ from interview_agent_runtime.runtime.state_machine import InterviewStateMachine
 from interview_agent_runtime.domain import InterviewStage
 from interview_agent_runtime.skills import SkillRegistry
 from interview_agent_runtime.tools import ToolExecutor, ToolPolicy, ToolRegistry
-from interview_agent_runtime.tools.default_tools import build_default_tool_registry
 
 
 @dataclass
@@ -38,26 +29,26 @@ class InterviewRuntime:
     def __init__(
         self,
         *,
-        state_machine: Optional[InterviewStateMachine] = None,
-        agent_registry: Optional[InterviewAgentRegistry] = None,
-        skill_registry: Optional[SkillRegistry] = None,
-        tool_registry: Optional[ToolRegistry] = None,
-        tool_policy: Optional[ToolPolicy] = None,
-        checkpoint_store: Optional[CheckpointStore] = None,
-        event_bus: Optional[InMemoryEventBus] = None,
-        executor: Optional[TaskExecutor] = None,
-        context_builder: Optional[AgentContextBuilder] = None,
+        state_machine: InterviewStateMachine,
+        agent_registry: InterviewAgentRegistry,
+        skill_registry: SkillRegistry,
+        tool_registry: ToolRegistry,
+        tool_policy: ToolPolicy,
+        checkpoint_store: CheckpointStore,
+        event_bus: InMemoryEventBus,
+        executor: TaskExecutor,
+        context_builder: AgentContextBuilder,
     ) -> None:
-        self.state_machine = state_machine or InterviewStateMachine()
-        self.agent_registry = agent_registry or self._default_agents()
-        self.skill_registry = skill_registry or SkillRegistry.with_defaults()
-        self.tool_registry = tool_registry or build_default_tool_registry()
-        self.tool_policy = tool_policy or ToolPolicy()
+        self.state_machine = state_machine
+        self.agent_registry = agent_registry
+        self.skill_registry = skill_registry
+        self.tool_registry = tool_registry
+        self.tool_policy = tool_policy
         self.tool_executor = ToolExecutor(self.tool_registry, self.tool_policy)
-        self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
-        self.event_bus = event_bus or InMemoryEventBus()
-        self.executor = executor or TaskExecutor()
-        self.context_builder = context_builder or AgentContextBuilder()
+        self.checkpoint_store = checkpoint_store
+        self.event_bus = event_bus
+        self.executor = executor
+        self.context_builder = context_builder
 
     async def start_session(
         self,
@@ -181,6 +172,7 @@ class InterviewRuntime:
             return RuntimeStepResult(session_id, previous, context.current_stage, None)
 
         artifact = result.value
+        self._validate_artifact_schema(artifact, skill.output_schema)
         context.publish(artifact)
         context.current_stage = self.state_machine.transition(previous, context, artifact)
 
@@ -201,6 +193,14 @@ class InterviewRuntime:
             )
         )
         return RuntimeStepResult(session_id, previous, context.current_stage, artifact)
+
+    def _validate_artifact_schema(self, artifact: AgentArtifact, output_schema: str) -> None:
+        if not output_schema:
+            return
+        if type(artifact).__name__ != output_schema:
+            raise TypeError(
+                f"Skill output schema mismatch: expected {output_schema}, got {type(artifact).__name__}"
+            )
 
     async def run_until_waiting_or_done(self, session_id: str, max_steps: int = 20) -> InterviewBlackboard:
         for _ in range(max_steps):
@@ -233,12 +233,3 @@ class InterviewRuntime:
                 metadata={"artifact_id": artifact.id, "stage": previous.value},
             )
         )
-
-    @staticmethod
-    def _default_agents() -> InterviewAgentRegistry:
-        registry = InterviewAgentRegistry()
-        for agent in [ProfileAgent(), PlannerAgent(), QuestionAgent(), EvaluatorAgent(), FollowUpAgent(), ReportAgent()]:
-            registry.register(agent)
-        return registry
-
-

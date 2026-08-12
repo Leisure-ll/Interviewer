@@ -203,8 +203,6 @@ def _evaluation(data: dict[str, Any]) -> EvaluationArtifact:
         missing_points=list(data.get("missing_points", [])),
         strengths=list(data.get("strengths", [])),
         confidence=data.get("confidence", 1.0),
-        need_follow_up=data.get("need_follow_up", False),
-        follow_up_target=data.get("follow_up_target"),
     )
     _copy_base(artifact, data)
     return artifact

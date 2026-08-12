@@ -1,4 +1,5 @@
 from .builder import AgentContextBuilder, ContextBudget
+from .compression import CapabilityContextCompressor, TokenEstimator
 from .execution import ExecutionContext
 from .models import (
     AgentContext,
@@ -14,7 +15,9 @@ __all__ = [
     "AgentContext",
     "AgentContextBuilder",
     "ContextBudget",
+    "CapabilityContextCompressor",
     "ExecutionContext",
+    "TokenEstimator",
     "EvaluationAgentContext",
     "FollowUpAgentContext",
     "PlannerAgentContext",

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 
 from interview_agent_runtime.context import EvaluationAgentContext, QuestionAgentContext, ReportAgentContext
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 from interview_agent_runtime.context import ExecutionContext
 
 
@@ -12,7 +13,7 @@ def test_question_context_projects_recent_questions_not_full_evaluations():
 
 
 async def _question_case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("context-question")
     board = await runtime.run_until_waiting_or_done(board.session_id)
     agent = runtime.agent_registry.resolve(InterviewStage.NEXT_QUESTION)
@@ -36,7 +37,7 @@ def test_evaluator_context_is_current_turn_only():
 
 
 async def _evaluation_case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("context-eval")
     board = await runtime.run_until_waiting_or_done(board.session_id)
     await runtime.receive_answer(board.session_id, "用缓存。")
@@ -59,7 +60,7 @@ async def _evaluation_case():
 
 
 def test_report_context_contains_summaries_not_raw_answers():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = asyncio.run(runtime.start_session("context-report"))
     agent = runtime.agent_registry.resolve(InterviewStage.REPORTING)
     skill = runtime.skill_registry.resolve(agent.required_skill(board))

@@ -79,6 +79,9 @@ class FollowUpAgentContext(AgentContext):
     relevant_evidence: list[Evidence] = field(default_factory=list)
     current_dimension: str = ""
     follow_up_history: list[FollowUpDecisionArtifact] = field(default_factory=list)
+    capability_summary: dict[str, Any] = field(default_factory=dict)
+    follow_up_budget: int = 0
+    dimension_follow_up_budget: int = 0
 
 
 @dataclass

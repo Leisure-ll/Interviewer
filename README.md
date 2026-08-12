@@ -26,7 +26,8 @@ The runtime is driven by interview domain objects:
 - `PositionProfile`: role, seniority, required/preferred skills, responsibilities, dimensions, keywords.
 - `InterviewPlan`: weighted dimensions, difficulty, question budget, follow-up budget, duration.
 - `QuestionArtifact`: text, dimension, type, source, expected points, related skills.
-- `EvaluationArtifact`: score, strengths, missing points, confidence, evidence, follow-up intent.
+- `EvaluationArtifact`: score, strengths, missing points, confidence, and evidence.
+- `FollowUpDecisionArtifact`: follow-up proposal with target, reason, missing evidence, and confidence.
 - `CapabilityProfile`: verified, weak, and uncertain skills with coverage and evidence counts.
 - `InterviewReportArtifact`: role match score, dimension scores, evidence, recommendation.
 
@@ -85,7 +86,8 @@ TTS, and digital-human vendors. Those systems should be connected through adapte
 - tool registry and tool policy
 - checkpoint store selection
 - context builder and context budget
-- event bus
+- event bus and observer
+- LLM provider selection
 
 `InterviewRuntime` owns a single interview session:
 
@@ -99,6 +101,16 @@ TTS, and digital-human vendors. Those systems should be connected through adapte
 - runtime events
 
 Harness does not transition FSM state or mutate `InterviewBlackboard`.
+Runtime does not scan the filesystem, build default tools, or create provider clients. It receives
+those dependencies from the harness.
+
+Default assembly lives in `harness/bootstrap.py`:
+
+- `build_mock_harness()`: fake tools, fake LLM provider, in-memory checkpoint, no-op observer.
+- `build_development_harness()`: optional OpenAI-compatible LLM provider and JSON checkpoint.
+- `build_production_harness()`: OpenAI-compatible provider and JSON checkpoint boundary for now.
+
+Production Qdrant, MySQL, Redis, and Langfuse adapters are intentionally not claimed as complete.
 
 ## Context Projection
 
@@ -109,7 +121,8 @@ Agents do not receive an undifferentiated prompt context. `AgentContextBuilder` 
 - `PlannerAgentContext`: candidate, position, capability, evidence, current plan.
 - `QuestionAgentContext`: current dimension, plan, capability, important evidence, recent questions.
 - `EvaluationAgentContext`: current question, answer, expected points, reference, relevant evidence.
-- `FollowUpAgentContext`: current question, answer, evaluation, missing points, follow-up history.
+- `FollowUpAgentContext`: current question, answer, evaluation, missing points, relevant evidence,
+  capability summary, follow-up history, and follow-up budget.
 - `ReportAgentContext`: plan summary, capability profile, scores, key evidence, evaluation summary.
 
 The context budget limits recent questions, recent answers, evidence items, and future
@@ -129,6 +142,22 @@ duplicate target filtering, and session timeout checks.
 
 ## Evidence-Driven Evaluation
 
+`EvaluatorAgent` and `FollowUpAgent` are deliberately separated:
+
+```text
+Question + Answer
+  -> EvaluatorAgent
+  -> EvaluationArtifact(score, evidence, missing_points)
+  -> Blackboard
+  -> FollowUpAgent
+  -> FollowUpDecisionArtifact(need_follow_up, target, reason)
+  -> TransitionGuard
+  -> FOLLOW_UP / NEXT_QUESTION / NEXT_DIMENSION / REPORTING
+```
+
+`EvaluationArtifact` does not contain `need_follow_up`, `follow_up_target`, or `next_state`.
+Agent output is a proposal or fact; final flow control belongs to `TransitionGuard`.
+
 `EvidenceDrivenEvaluator` does not return an isolated score. It derives:
 
 - matched expected points
@@ -136,8 +165,27 @@ duplicate target filtering, and session timeout checks.
 - evidence with source question, answer excerpt, skill, confidence, and polarity
 - score tied to evidence, missing points, and answer detail
 
+`ScorePolicy` owns deterministic score aggregation so scores can be explained by matched
+points, missing points, evidence confidence, and answer specificity.
+
 The report is generated from `InterviewPlan`, `CapabilityProfile`, dimension scores,
 and accumulated evidence, not from a plain chat transcript.
+
+## LLM Provider Boundary
+
+The current code includes a lightweight provider boundary for real model integration:
+
+- `LLMProvider` protocol with `structured_generate()`.
+- `FakeLLMProvider` for tests and local demo.
+- `OpenAICompatibleLLMProvider` with configurable `base_url`, `api_key`, and `model`.
+- `PromptAssembler` combines `Skill.prompt`, typed `AgentContext`, and output schema instructions.
+- `ProfileAgent`, `EvaluatorAgent`, and `FollowUpAgent` can consume structured LLM drafts.
+
+LLM draft schemas are separate from final artifact schemas. For example, `EvaluatorAgent`
+can request an `EvaluationDraft`, then `EvidenceDrivenEvaluator` and `ScorePolicy` turn
+that draft into an `EvaluationArtifact`. Agents keep a deterministic fallback path when
+LLM output is empty, malformed, or unavailable. Runtime/FSM/budget/guard logic is not
+delegated to LLMs.
 
 ## Skill Runtime
 
@@ -150,6 +198,9 @@ prompt text. Current skills:
 - `evaluate-answer`
 - `follow-up-decision`
 - `interview-report`
+
+Runtime validates that the artifact class returned by an agent matches the skill
+`output_schema`. For example, `evaluate-answer` must return `EvaluationArtifact`.
 
 ## Tool Governance
 

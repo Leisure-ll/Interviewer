@@ -13,5 +13,6 @@ max_tokens: 2500
 version: 1.0
 ---
 
-Evaluate the current answer against the current question, rubric, and interview plan.
-Return only structured evidence, scores, missing points, and follow-up intent.
+Evaluate the current answer against the current question and rubric.
+Return only structured evidence, scores, missing points, strengths, and confidence.
+Do not decide whether to ask a follow-up question.

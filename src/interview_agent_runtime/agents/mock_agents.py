@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from interview_agent_runtime.agents.base import BaseInterviewAgent
 from interview_agent_runtime.artifacts import (
@@ -28,6 +28,8 @@ from interview_agent_runtime.domain import (
     PositionProfile,
 )
 from interview_agent_runtime.evaluation import EvidenceDrivenEvaluator
+from interview_agent_runtime.prompting import PromptAssembler
+from interview_agent_runtime.providers import LLMProvider
 from interview_agent_runtime.questioning import QuestionGenerationPipeline
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolContext, ToolExecutor
@@ -36,6 +38,11 @@ from interview_agent_runtime.tools import ToolContext, ToolExecutor
 class ProfileAgent(BaseInterviewAgent):
     name = "ProfileAgent"
     stages = {InterviewStage.PROFILE_ANALYSIS}
+    draft_schema = "ProfileDraft"
+
+    def __init__(self, llm_provider: Optional[LLMProvider] = None, prompt_assembler: Optional[PromptAssembler] = None):
+        self.llm_provider = llm_provider
+        self.prompt_assembler = prompt_assembler or PromptAssembler()
 
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "profile-analysis"
@@ -52,25 +59,28 @@ class ProfileAgent(BaseInterviewAgent):
         tool_context = ToolContext(context.session_id, self.name, skill.name, context)
         resume = await tools.call("resume.retrieve", {}, tool_context, visible_tools)
         jd = await tools.call("jd.retrieve", {}, tool_context, visible_tools)
+        draft = await self._profile_draft(agent_context, skill)
+        candidate_data = draft.get("candidate_profile", {}) if isinstance(draft.get("candidate_profile"), dict) else {}
+        position_data = draft.get("position_profile", {}) if isinstance(draft.get("position_profile"), dict) else {}
         candidate = CandidateProfile(
             candidate_id=resume.get("candidate_id", context.session_id),
-            target_role=jd.get("position"),
-            years_of_experience=resume.get("years_of_experience"),
-            skills=list(resume.get("skills", [])),
+            target_role=candidate_data.get("target_role") or jd.get("position"),
+            years_of_experience=candidate_data.get("years_of_experience", resume.get("years_of_experience")),
+            skills=_list(candidate_data.get("skills")) or list(resume.get("skills", [])),
             project_experiences=list(resume.get("project_experiences", [])),
-            strengths=list(resume.get("strengths", [])),
-            possible_weaknesses=list(resume.get("possible_weaknesses", [])),
-            potential_gaps=list(resume.get("potential_gaps", resume.get("possible_weaknesses", []))),
-            resume_keywords=list(resume.get("resume_keywords", resume.get("skills", []))),
+            strengths=_list(candidate_data.get("strengths")) or list(resume.get("strengths", [])),
+            possible_weaknesses=_list(candidate_data.get("possible_weaknesses")) or list(resume.get("possible_weaknesses", [])),
+            potential_gaps=_list(candidate_data.get("potential_gaps")) or list(resume.get("potential_gaps", resume.get("possible_weaknesses", []))),
+            resume_keywords=_list(candidate_data.get("resume_keywords")) or list(resume.get("resume_keywords", resume.get("skills", []))),
         )
         position = PositionProfile(
-            role_name=jd.get("position", "Software Engineer"),
-            required_skills=list(jd.get("required_skills", [])),
-            preferred_skills=list(jd.get("preferred_skills", [])),
-            responsibilities=list(jd.get("responsibilities", [])),
-            competency_dimensions=list(jd.get("dimensions", [])),
-            seniority=jd.get("seniority"),
-            keywords=list(jd.get("keywords", jd.get("required_skills", []))),
+            role_name=position_data.get("role_name") or jd.get("position", "Software Engineer"),
+            required_skills=_list(position_data.get("required_skills")) or list(jd.get("required_skills", [])),
+            preferred_skills=_list(position_data.get("preferred_skills")) or list(jd.get("preferred_skills", [])),
+            responsibilities=_list(position_data.get("responsibilities")) or list(jd.get("responsibilities", [])),
+            competency_dimensions=_list(position_data.get("competency_dimensions")) or list(jd.get("dimensions", [])),
+            seniority=position_data.get("seniority") or jd.get("seniority"),
+            keywords=_list(position_data.get("keywords")) or list(jd.get("keywords", jd.get("required_skills", []))),
         )
         return CandidateProfileArtifact(
             owner=self.name,
@@ -79,6 +89,24 @@ class ProfileAgent(BaseInterviewAgent):
             resume_id=resume.get("resume_id", ""),
             confidence=0.9,
         )
+
+    async def _profile_draft(self, agent_context: ProfileAgentContext, skill: SkillDefinition) -> dict[str, Any]:
+        if self.llm_provider is None:
+            return {}
+        try:
+            messages = self.prompt_assembler.assemble(
+                skill=skill,
+                context=agent_context,
+                output_schema=self.draft_schema,
+            )
+            response = await self.llm_provider.structured_generate(
+                messages=messages,
+                output_schema=self.draft_schema,
+                timeout=skill.timeout,
+            )
+            return response.parsed
+        except Exception:
+            return {}
 
 
 class PlannerAgent(BaseInterviewAgent):
@@ -194,9 +222,17 @@ class QuestionAgent(BaseInterviewAgent):
 class EvaluatorAgent(BaseInterviewAgent):
     name = "EvaluatorAgent"
     stages = {InterviewStage.EVALUATING}
+    draft_schema = "EvaluationDraft"
 
-    def __init__(self, evaluator: Optional[EvidenceDrivenEvaluator] = None):
+    def __init__(
+        self,
+        evaluator: Optional[EvidenceDrivenEvaluator] = None,
+        llm_provider: Optional[LLMProvider] = None,
+        prompt_assembler: Optional[PromptAssembler] = None,
+    ):
         self.evaluator = evaluator or EvidenceDrivenEvaluator()
+        self.llm_provider = llm_provider
+        self.prompt_assembler = prompt_assembler or PromptAssembler()
 
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "evaluate-answer"
@@ -210,12 +246,36 @@ class EvaluatorAgent(BaseInterviewAgent):
         visible_tools: set[str],
     ) -> AgentArtifact:
         assert isinstance(agent_context, EvaluationAgentContext)
-        return self.evaluator.evaluate(agent_context)
+        draft = await self._evaluation_draft(agent_context, skill)
+        return self.evaluator.evaluate(agent_context, draft=draft)
+
+    async def _evaluation_draft(self, agent_context: EvaluationAgentContext, skill: SkillDefinition) -> dict[str, Any]:
+        if self.llm_provider is None:
+            return {}
+        try:
+            messages = self.prompt_assembler.assemble(
+                skill=skill,
+                context=agent_context,
+                output_schema=self.draft_schema,
+            )
+            response = await self.llm_provider.structured_generate(
+                messages=messages,
+                output_schema=self.draft_schema,
+                timeout=skill.timeout,
+            )
+            return response.parsed
+        except Exception:
+            return {}
 
 
 class FollowUpAgent(BaseInterviewAgent):
     name = "FollowUpAgent"
     stages = {InterviewStage.DECISION}
+    draft_schema = "FollowUpDraft"
+
+    def __init__(self, llm_provider: Optional[LLMProvider] = None, prompt_assembler: Optional[PromptAssembler] = None):
+        self.llm_provider = llm_provider
+        self.prompt_assembler = prompt_assembler or PromptAssembler()
 
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "follow-up-decision"
@@ -233,17 +293,72 @@ class FollowUpAgent(BaseInterviewAgent):
         question = agent_context.current_question
         if evaluation is None or question is None:
             raise RuntimeError("Cannot decide follow-up without evaluation")
-        need_follow_up = evaluation.need_follow_up
-        target = evaluation.follow_up_target if need_follow_up else None
+        draft = await self._follow_up_draft(agent_context, skill)
+        target = self._select_target(agent_context, draft)
+        need_follow_up = target is not None
+        confidence = self._confidence(agent_context, bool(target), draft)
         return FollowUpDecisionArtifact(
             owner=self.name,
             question_id=question.question_id,
             need_follow_up=need_follow_up,
-            confidence=0.87 if need_follow_up else 0.78,
+            confidence=confidence,
             target=target,
-            reason="当前回答缺少关键可验证证据" if need_follow_up else "当前回答已覆盖主要考察点",
-            missing_evidence=evaluation.missing_points,
+            reason=str(draft.get("reason") or self._reason(agent_context, target)),
+            missing_evidence=_list(draft.get("missing_evidence")) or list(agent_context.missing_points),
         )
+
+    async def _follow_up_draft(self, agent_context: FollowUpAgentContext, skill: SkillDefinition) -> dict[str, Any]:
+        if self.llm_provider is None:
+            return {}
+        try:
+            messages = self.prompt_assembler.assemble(
+                skill=skill,
+                context=agent_context,
+                output_schema=self.draft_schema,
+            )
+            response = await self.llm_provider.structured_generate(
+                messages=messages,
+                output_schema=self.draft_schema,
+                timeout=skill.timeout,
+            )
+            return response.parsed
+        except Exception:
+            return {}
+
+    def _select_target(self, context: FollowUpAgentContext, draft: Optional[dict[str, Any]] = None) -> Optional[str]:
+        if context.current_question and context.current_question.is_follow_up:
+            return None
+        if context.follow_up_budget <= 0 or context.dimension_follow_up_budget <= 0:
+            return None
+        if context.current_evaluation is None or context.current_evaluation.confidence < 0.45:
+            return None
+        if not context.missing_points:
+            return None
+        coverage = context.capability_summary.get("dimension_coverage", {})
+        if isinstance(coverage, dict) and coverage.get(context.current_dimension, 0.0) >= 0.85:
+            return None
+        if draft and draft.get("need_follow_up") is False:
+            return None
+        if draft and str(draft.get("target", "")).strip():
+            return str(draft["target"]).strip()
+        return context.missing_points[0]
+
+    def _confidence(self, context: FollowUpAgentContext, has_target: bool, draft: Optional[dict[str, Any]] = None) -> float:
+        if draft and isinstance(draft.get("confidence"), (int, float)):
+            return round(max(0.0, min(1.0, float(draft["confidence"]))), 2)
+        if not has_target:
+            return 0.72
+        evidence_gap = min(0.2, len(context.missing_points) * 0.05)
+        low_coverage_boost = 0.1
+        coverage = context.capability_summary.get("dimension_coverage", {})
+        if isinstance(coverage, dict) and coverage.get(context.current_dimension, 0.0) >= 0.6:
+            low_coverage_boost = 0.0
+        return round(min(0.95, 0.72 + evidence_gap + low_coverage_boost), 2)
+
+    def _reason(self, context: FollowUpAgentContext, target: Optional[str]) -> str:
+        if target is None:
+            return "当前回答没有需要继续追问的高价值证据缺口"
+        return f"当前回答仍缺少「{target}」相关证据，需要局部追问验证"
 
 
 class ReportAgent(BaseInterviewAgent):
@@ -294,3 +409,9 @@ class ReportAgent(BaseInterviewAgent):
             hiring_recommendation=recommendation,
             improvement_suggestions=[f"补充 {item} 的具体案例" for item in weak],
         )
+
+
+def _list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]

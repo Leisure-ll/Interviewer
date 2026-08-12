@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 
 from interview_agent_runtime.context import AgentContextBuilder, ContextBudget
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 from interview_agent_runtime.context import ExecutionContext
 
 
@@ -12,7 +13,7 @@ def test_context_budget_limits_recent_questions():
 
 
 async def _case():
-    runtime = InterviewRuntime(context_builder=AgentContextBuilder(ContextBudget(max_recent_questions=1)))
+    runtime = make_mock_runtime(context_builder=AgentContextBuilder(ContextBudget(max_recent_questions=1)))
     board = await runtime.start_session("budget")
     board = await runtime.run_until_waiting_or_done(board.session_id)
     await runtime.receive_answer(board.session_id, "用缓存。")

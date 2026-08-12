@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from interview_agent_runtime.runtime import InterviewRuntime
+from conftest import make_mock_runtime
 
 
 def test_profile_agent_builds_candidate_and_position_profiles():
@@ -10,7 +10,7 @@ def test_profile_agent_builds_candidate_and_position_profiles():
 
 
 async def _case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("profile")
     await runtime.run_step(board.session_id)
     await runtime.run_step(board.session_id)

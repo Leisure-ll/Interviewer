@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
+from conftest import make_mock_runtime
+from interview_agent_runtime.runtime import InterviewStage
 
 
 def test_report_has_role_match_and_key_evidence():
@@ -10,7 +11,7 @@ def test_report_has_role_match_and_key_evidence():
 
 
 async def _case():
-    runtime = InterviewRuntime()
+    runtime = make_mock_runtime()
     board = await runtime.start_session("report")
     answers = [
         "用缓存。",
