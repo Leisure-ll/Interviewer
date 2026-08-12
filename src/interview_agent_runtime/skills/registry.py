@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 
 @dataclass
@@ -109,9 +109,63 @@ class SkillRegistry:
     @classmethod
     def load_from_directory(cls, directory: Union[str, Path]) -> "SkillRegistry":
         registry = cls.with_defaults()
-        # Phase 1 intentionally keeps parsing conservative. Existing SKILL.md files can be
-        # migrated by adding frontmatter parsing here without changing runtime contracts.
-        _ = Path(directory)
+        root = Path(directory)
+        if not root.exists():
+            return registry
+        for path in root.rglob("SKILL.md"):
+            skill = _parse_skill_markdown(path)
+            registry.register(skill)
         return registry
+
+
+def _parse_skill_markdown(path: Path) -> SkillDefinition:
+    text = path.read_text(encoding="utf-8")
+    frontmatter: dict[str, Any] = {}
+    prompt = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            raw = text[3:end].strip()
+            prompt = text[end + 4 :].strip()
+            frontmatter = _parse_frontmatter(raw)
+    return SkillDefinition(
+        name=str(frontmatter.get("name") or path.parent.name),
+        description=str(frontmatter.get("description", "")),
+        agent=str(frontmatter.get("agent", "")),
+        prompt=prompt,
+        allowed_tools=list(frontmatter.get("tools", [])),
+        output_schema=str(frontmatter.get("output_schema", "")),
+        timeout=float(frontmatter.get("timeout", 15)),
+        retry=int(frontmatter.get("retry", 0)),
+        max_tokens=int(frontmatter.get("max_tokens", 2500)),
+        version=str(frontmatter.get("version", "1.0")),
+    )
+
+
+def _parse_frontmatter(raw: str) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    current_key = ""
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- ") and current_key:
+            data.setdefault(current_key, []).append(stripped[2:].strip())
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        current_key = key.strip()
+        value = value.strip()
+        if value == "":
+            data[current_key] = []
+        elif value.isdigit():
+            data[current_key] = int(value)
+        else:
+            try:
+                data[current_key] = float(value)
+            except ValueError:
+                data[current_key] = value.strip('"').strip("'")
+    return data
 
 

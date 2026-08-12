@@ -1,22 +1,5 @@
-from __future__ import annotations
+from interview_agent_runtime.domain import InterviewStage
 
-from enum import Enum
-
-
-class InterviewStage(str, Enum):
-    INIT = "INIT"
-    PROFILE_ANALYSIS = "PROFILE_ANALYSIS"
-    INTERVIEW_PLANNING = "INTERVIEW_PLANNING"
-    QUESTION_PREPARING = "QUESTION_PREPARING"
-    QUESTIONING = "QUESTIONING"
-    LISTENING = "LISTENING"
-    EVALUATING = "EVALUATING"
-    DECISION = "DECISION"
-    FOLLOW_UP = "FOLLOW_UP"
-    NEXT_QUESTION = "NEXT_QUESTION"
-    NEXT_DIMENSION = "NEXT_DIMENSION"
-    REPORTING = "REPORTING"
-    FINISHED = "FINISHED"
-    FAILED = "FAILED"
+__all__ = ["InterviewStage"]
 
 

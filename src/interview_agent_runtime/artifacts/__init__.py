@@ -8,6 +8,8 @@ from .models import (
     InterviewPlanArtifact,
     InterviewReportArtifact,
     QuestionArtifact,
+    artifact_id,
+    normalize_follow_up_target,
 )
 
 __all__ = [
@@ -20,6 +22,8 @@ __all__ = [
     "InterviewPlanArtifact",
     "InterviewReportArtifact",
     "QuestionArtifact",
+    "artifact_id",
+    "normalize_follow_up_target",
 ]
 
 

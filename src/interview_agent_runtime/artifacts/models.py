@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
+from interview_agent_runtime.domain import CandidateProfile, InterviewPlan, PositionProfile
 
-def _artifact_id(prefix: str) -> str:
+
+def artifact_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
@@ -14,7 +16,7 @@ def _artifact_id(prefix: str) -> str:
 class AgentArtifact:
     kind: str
     owner: str
-    id: str = field(default_factory=lambda: _artifact_id("artifact"))
+    id: str = field(default_factory=lambda: artifact_id("artifact"))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     confidence: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -22,36 +24,47 @@ class AgentArtifact:
 
 @dataclass
 class CandidateProfileArtifact(AgentArtifact):
+    candidate_profile: CandidateProfile = field(default_factory=lambda: CandidateProfile(candidate_id="candidate"))
+    position_profile: Optional[PositionProfile] = None
     resume_id: str = ""
-    skills: list[str] = field(default_factory=list)
-    project_experience: list[str] = field(default_factory=list)
-    risk_notes: list[str] = field(default_factory=list)
-
-    def __init__(self, owner: str, resume_id: str = "", skills: Optional[list[str]] = None):
-        super().__init__(kind="candidate_profile", owner=owner)
-        self.resume_id = resume_id
-        self.skills = skills or []
-        self.project_experience = []
-        self.risk_notes = []
-
-
-@dataclass
-class InterviewPlanArtifact(AgentArtifact):
-    dimensions: list[dict[str, Any]] = field(default_factory=list)
-    total_question_budget: int = 0
-    total_follow_up_budget: int = 0
 
     def __init__(
         self,
         owner: str,
-        dimensions: list[dict[str, Any]],
-        total_question_budget: int,
-        total_follow_up_budget: int,
+        candidate_profile: Optional[CandidateProfile] = None,
+        position_profile: Optional[PositionProfile] = None,
+        resume_id: str = "",
+        confidence: float = 1.0,
     ):
-        super().__init__(kind="interview_plan", owner=owner)
-        self.dimensions = dimensions
-        self.total_question_budget = total_question_budget
-        self.total_follow_up_budget = total_follow_up_budget
+        super().__init__(kind="candidate_profile", owner=owner, confidence=confidence)
+        self.candidate_profile = candidate_profile or CandidateProfile(candidate_id="candidate")
+        self.position_profile = position_profile
+        self.resume_id = resume_id
+
+    @property
+    def skills(self) -> list[str]:
+        return self.candidate_profile.skills
+
+
+@dataclass
+class InterviewPlanArtifact(AgentArtifact):
+    plan: InterviewPlan = field(default_factory=lambda: InterviewPlan([], 0, 0, 0))
+
+    def __init__(self, owner: str, plan: InterviewPlan, confidence: float = 1.0):
+        super().__init__(kind="interview_plan", owner=owner, confidence=confidence)
+        self.plan = plan
+
+    @property
+    def dimensions(self) -> list[dict[str, Any]]:
+        return [dict(item.__dict__) for item in self.plan.dimensions]
+
+    @property
+    def total_question_budget(self) -> int:
+        return self.plan.total_question_budget
+
+    @property
+    def total_follow_up_budget(self) -> int:
+        return self.plan.total_follow_up_budget
 
 
 @dataclass
@@ -64,6 +77,9 @@ class QuestionArtifact(AgentArtifact):
     reference_answer: str = ""
     source: str = "llm"
     is_follow_up: bool = False
+    target_evidence: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    parent_question_id: Optional[str] = None
 
     def __init__(
         self,
@@ -76,6 +92,9 @@ class QuestionArtifact(AgentArtifact):
         reference_answer: str = "",
         source: str = "llm",
         is_follow_up: bool = False,
+        target_evidence: Optional[list[str]] = None,
+        tags: Optional[list[str]] = None,
+        parent_question_id: Optional[str] = None,
     ):
         super().__init__(kind="question", owner=owner)
         self.question_id = question_id
@@ -86,6 +105,9 @@ class QuestionArtifact(AgentArtifact):
         self.reference_answer = reference_answer
         self.source = source
         self.is_follow_up = is_follow_up
+        self.target_evidence = target_evidence or []
+        self.tags = tags or []
+        self.parent_question_id = parent_question_id
 
 
 @dataclass
@@ -93,12 +115,14 @@ class AnswerArtifact(AgentArtifact):
     question_id: str = ""
     answer_id: str = ""
     text: str = ""
+    normalized_text: str = ""
 
     def __init__(self, owner: str, question_id: str, text: str):
         super().__init__(kind="answer", owner=owner)
         self.question_id = question_id
-        self.answer_id = _artifact_id("answer")
+        self.answer_id = artifact_id("answer")
         self.text = text
+        self.normalized_text = " ".join(text.strip().split())
 
 
 @dataclass
@@ -108,6 +132,10 @@ class Evidence:
     source_answer_id: str
     quote_or_summary: str
     confidence: float
+    evidence_id: str = field(default_factory=lambda: artifact_id("evidence"))
+    source_question_id: str = ""
+    answer_excerpt: str = ""
+    evidence_type: str = "positive"
 
 
 @dataclass
@@ -115,7 +143,9 @@ class EvaluationArtifact(AgentArtifact):
     question_id: str = ""
     answer_id: str = ""
     score: float = 0.0
+    overall_score: float = 0.0
     dimension_scores: dict[str, float] = field(default_factory=dict)
+    strengths: list[str] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     missing_points: list[str] = field(default_factory=list)
     need_follow_up: bool = False
@@ -130,6 +160,7 @@ class EvaluationArtifact(AgentArtifact):
         dimension_scores: dict[str, float],
         evidence: list[Evidence],
         missing_points: Optional[list[str]] = None,
+        strengths: Optional[list[str]] = None,
         confidence: float = 1.0,
         need_follow_up: bool = False,
         follow_up_target: Optional[str] = None,
@@ -138,9 +169,11 @@ class EvaluationArtifact(AgentArtifact):
         self.question_id = question_id
         self.answer_id = answer_id
         self.score = score
+        self.overall_score = score
         self.dimension_scores = dimension_scores
         self.evidence = evidence
         self.missing_points = missing_points or []
+        self.strengths = strengths or []
         self.need_follow_up = need_follow_up
         self.follow_up_target = follow_up_target
 
@@ -149,8 +182,9 @@ class EvaluationArtifact(AgentArtifact):
 class FollowUpDecisionArtifact(AgentArtifact):
     question_id: str = ""
     need_follow_up: bool = False
-    target: str = ""
-    reason: str = ""
+    target: Optional[str] = None
+    normalized_target: str = ""
+    reason: Optional[str] = None
     missing_evidence: list[str] = field(default_factory=list)
 
     def __init__(
@@ -159,14 +193,15 @@ class FollowUpDecisionArtifact(AgentArtifact):
         question_id: str,
         need_follow_up: bool,
         confidence: float,
-        target: str = "",
-        reason: str = "",
+        target: Optional[str] = None,
+        reason: Optional[str] = None,
         missing_evidence: Optional[list[str]] = None,
     ):
         super().__init__(kind="follow_up_decision", owner=owner, confidence=confidence)
         self.question_id = question_id
         self.need_follow_up = need_follow_up
         self.target = target
+        self.normalized_target = normalize_follow_up_target(target or "")
         self.reason = reason
         self.missing_evidence = missing_evidence or []
 
@@ -174,10 +209,18 @@ class FollowUpDecisionArtifact(AgentArtifact):
 @dataclass
 class InterviewReportArtifact(AgentArtifact):
     overall_score: float = 0.0
+    role_match: str = ""
     dimension_scores: dict[str, float] = field(default_factory=dict)
+    verified_strengths: list[str] = field(default_factory=list)
     verified_skills: list[str] = field(default_factory=list)
+    weaknesses: list[str] = field(default_factory=list)
     weak_skills: list[str] = field(default_factory=list)
+    insufficient_evidence_areas: list[str] = field(default_factory=list)
+    key_evidence: list[Evidence] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
+    interview_summary: str = ""
+    hiring_recommendation: str = ""
+    improvement_suggestions: list[str] = field(default_factory=list)
 
     def __init__(
         self,
@@ -187,11 +230,27 @@ class InterviewReportArtifact(AgentArtifact):
         verified_skills: list[str],
         weak_skills: list[str],
         evidence: list[Evidence],
+        role_match: str = "",
+        insufficient_evidence_areas: Optional[list[str]] = None,
+        interview_summary: str = "",
+        hiring_recommendation: str = "",
+        improvement_suggestions: Optional[list[str]] = None,
     ):
         super().__init__(kind="interview_report", owner=owner)
         self.overall_score = overall_score
+        self.role_match = role_match
         self.dimension_scores = dimension_scores
         self.verified_skills = verified_skills
+        self.verified_strengths = verified_skills
         self.weak_skills = weak_skills
+        self.weaknesses = weak_skills
+        self.insufficient_evidence_areas = insufficient_evidence_areas or []
         self.evidence = evidence
+        self.key_evidence = evidence[:8]
+        self.interview_summary = interview_summary
+        self.hiring_recommendation = hiring_recommendation
+        self.improvement_suggestions = improvement_suggestions or []
 
+
+def normalize_follow_up_target(value: str) -> str:
+    return "".join(ch.lower() for ch in value.strip() if ch.isalnum())

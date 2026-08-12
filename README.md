@@ -12,11 +12,21 @@ Build an artifact-driven interview runtime:
 State -> Agent -> Skill -> Authorized Tools -> Artifact -> Blackboard -> Transition -> Checkpoint/Event
 ```
 
-The first phase contains a minimal runnable loop:
+The current phase contains a runnable AI interview loop:
 
 ```text
-Start Session -> Generate Question -> Receive Answer -> Evaluate -> Follow-up / Next Question -> Checkpoint -> Finish
+Start Session -> Profile -> Plan -> Generate Question -> Answer -> Evaluate -> Evidence -> Follow-up / Next Question -> Report
 ```
+
+## Local Demo
+
+```powershell
+cd D:\agent项目学习\AI面试
+python scripts\demo_interview.py
+```
+
+The demo simulates a Java backend / agent engineering interview without requiring an
+LLM key. It uses mock tools for resume, JD, question bank, rubric, and knowledge retrieval.
 
 ## Run Tests
 
@@ -25,4 +35,23 @@ cd D:\agent项目学习\AI面试
 python -m pytest
 ```
 
-The tests use mock agents and do not require an LLM, Qdrant, Redis, MySQL, or the digital-human vendor APIs.
+The tests cover profile construction, planning, question generation and fallback,
+evidence-driven evaluation, follow-up guard, skill loading, tool governance,
+checkpoint restore, and the full interview flow.
+
+## Current Architecture
+
+```text
+InterviewRuntime
+  -> FSM
+  -> Specialist Agent
+  -> Skill
+  -> Authorized Tools
+  -> Artifact
+  -> Blackboard
+  -> Evidence / CapabilityProfile
+  -> Checkpoint / Event
+```
+
+Core runtime remains independent from FastAPI, LangGraph, Qdrant, Redis, MySQL, ASR,
+TTS, and digital-human vendors. Those systems should be connected through adapters.
