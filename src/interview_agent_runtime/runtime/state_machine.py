@@ -14,7 +14,7 @@ from interview_agent_runtime.artifacts import (
 )
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.artifacts import normalize_follow_up_target
-from interview_agent_runtime.runtime.states import InterviewStage
+from interview_agent_runtime.domain import InterviewStage
 
 
 @dataclass

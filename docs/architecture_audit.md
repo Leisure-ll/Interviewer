@@ -1,5 +1,16 @@
 # AI 数字人智能面试系统重构审计与设计
 
+## 当前实现补充：Harness / Runtime / Context 边界
+
+当前仓库已经形成收敛后的 Interview Agent Harness：
+
+- `InterviewHarness` 负责装配 AgentRegistry、SkillRegistry、ToolPolicy、CheckpointStore、EventBus 和 `AgentContextBuilder`。
+- `InterviewRuntime` 只负责单场面试执行：FSM、Agent 调度、Skill 解析、Tool 授权、Artifact 发布、Checkpoint 和 Event。
+- 六个 Specialist Agent 固定为 Profile/Planner/Question/Evaluator/FollowUp/Report，不动态创建 SubAgent。
+- Agent 之间不直接通信，统一通过 `Artifact -> Blackboard -> Context Projection` 协作。
+- `AgentContextBuilder` 将完整 Blackboard 投影为 typed context，避免每个 Agent 默认拿全量历史。
+- Context Budget 和 capability-oriented summary 已有 deterministic 实现，为后续 LLM context 控制做准备。
+
 ## 1. 当前项目架构审计
 
 当前主项目位于 `D:\agent项目学习\数字人agent`，其中 AI 测评核心在 `harness-evaluation`。
@@ -408,4 +419,3 @@ Langfuse 后续仍保留，职责限定为 LLM/prompt/token/latency trace。
 - `tests/test_runtime_smoke.py`
 
 旧项目暂不修改。下一阶段再把 `harness-evaluation` 里的真实 service 通过 adapter 接入。
-

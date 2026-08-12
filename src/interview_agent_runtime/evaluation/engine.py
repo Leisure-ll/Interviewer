@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 from interview_agent_runtime.artifacts import Evidence, EvaluationArtifact
-from interview_agent_runtime.blackboard import InterviewBlackboard
+from interview_agent_runtime.context import EvaluationAgentContext
 
 
 @dataclass
 class EvidenceDrivenEvaluator:
-    def evaluate(self, context: InterviewBlackboard) -> EvaluationArtifact:
-        answer = context.latest_answer
+    def evaluate(self, context: EvaluationAgentContext) -> EvaluationArtifact:
+        answer = context.current_answer
         question = context.current_question
         if answer is None or question is None:
             raise RuntimeError("Cannot evaluate without answer and question")
@@ -62,8 +62,6 @@ class EvidenceDrivenEvaluator:
             confidence=0.84 if text else 0.3,
             need_follow_up=bool(missing) and (
                 not question.is_follow_up
-                or context.current_question_follow_up_round()
-                < context.runtime_metadata.max_follow_up_round_per_question
             ),
             follow_up_target=missing[0] if missing else None,
         )

@@ -11,15 +11,24 @@ from interview_agent_runtime.artifacts import (
     InterviewReportArtifact,
 )
 from interview_agent_runtime.blackboard import InterviewBlackboard
+from interview_agent_runtime.context import (
+    AgentContext,
+    EvaluationAgentContext,
+    FollowUpAgentContext,
+    PlannerAgentContext,
+    ProfileAgentContext,
+    QuestionAgentContext,
+    ReportAgentContext,
+)
 from interview_agent_runtime.domain import (
     CandidateProfile,
     InterviewDimension,
     InterviewPlan,
+    InterviewStage,
     PositionProfile,
 )
 from interview_agent_runtime.evaluation import EvidenceDrivenEvaluator
 from interview_agent_runtime.questioning import QuestionGenerationPipeline
-from interview_agent_runtime.runtime.states import InterviewStage
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolContext, ToolExecutor
 
@@ -34,10 +43,12 @@ class ProfileAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
+        assert isinstance(agent_context, ProfileAgentContext)
         tool_context = ToolContext(context.session_id, self.name, skill.name, context)
         resume = await tools.call("resume.retrieve", {}, tool_context, visible_tools)
         jd = await tools.call("jd.retrieve", {}, tool_context, visible_tools)
@@ -80,16 +91,16 @@ class PlannerAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
+        assert isinstance(agent_context, PlannerAgentContext)
         tool_context = ToolContext(context.session_id, self.name, skill.name, context)
         rubric = await tools.call("rubric.retrieve", {}, tool_context, visible_tools)
-        position = context.position_profile
-        if position is None and context.candidate_profile is not None:
-            position = context.candidate_profile.position_profile
-        candidate = context.candidate
+        position = agent_context.position_profile
+        candidate = agent_context.candidate_profile
         dimension_names = list(position.competency_dimensions if position else ["Java Backend", "Agent Engineering"])
         if candidate:
             skills = set(candidate.skills + candidate.resume_keywords)
@@ -171,11 +182,13 @@ class QuestionAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
-        return await self.pipeline.generate(context, skill, tools, visible_tools, self.name)
+        assert isinstance(agent_context, QuestionAgentContext)
+        return await self.pipeline.generate(context, agent_context, skill, tools, visible_tools, self.name)
 
 
 class EvaluatorAgent(BaseInterviewAgent):
@@ -191,11 +204,13 @@ class EvaluatorAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
-        return self.evaluator.evaluate(context)
+        assert isinstance(agent_context, EvaluationAgentContext)
+        return self.evaluator.evaluate(agent_context)
 
 
 class FollowUpAgent(BaseInterviewAgent):
@@ -208,12 +223,14 @@ class FollowUpAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
-        evaluation = context.latest_evaluation
-        question = context.current_question
+        assert isinstance(agent_context, FollowUpAgentContext)
+        evaluation = agent_context.current_evaluation
+        question = agent_context.current_question
         if evaluation is None or question is None:
             raise RuntimeError("Cannot decide follow-up without evaluation")
         need_follow_up = evaluation.need_follow_up
@@ -239,15 +256,17 @@ class ReportAgent(BaseInterviewAgent):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
     ) -> AgentArtifact:
-        scores = dict(context.capability_profile.dimension_scores)
+        assert isinstance(agent_context, ReportAgentContext)
+        scores = dict(agent_context.dimension_scores)
         overall = round(sum(scores.values()) / max(1, len(scores)), 1)
-        weak = list(context.capability_profile.weak_skills)
-        verified = list(context.capability_profile.verified_skills)
-        uncertain = list(context.capability_profile.uncertain_skills)
+        weak = list(agent_context.capability_profile.weak_skills)
+        verified = list(agent_context.capability_profile.verified_skills)
+        uncertain = list(agent_context.capability_profile.uncertain_skills)
         if overall >= 80:
             recommendation = "建议进入下一轮"
         elif overall >= 65:

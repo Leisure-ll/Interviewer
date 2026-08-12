@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from interview_agent_runtime.artifacts import InterviewReportArtifact, QuestionArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
+from interview_agent_runtime.harness import InterviewHarness
 from interview_agent_runtime.runtime import InterviewRuntime, InterviewStage
 
 
@@ -19,8 +20,13 @@ class InterviewStatus:
 
 
 class InterviewApplicationService:
-    def __init__(self, runtime: Optional[InterviewRuntime] = None) -> None:
-        self.runtime = runtime or InterviewRuntime()
+    def __init__(
+        self,
+        runtime: Optional[InterviewRuntime] = None,
+        harness: Optional[InterviewHarness] = None,
+    ) -> None:
+        self.harness = harness or InterviewHarness.from_config()
+        self.runtime = runtime or self.harness.create_runtime()
 
     async def start_interview(
         self,

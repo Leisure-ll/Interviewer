@@ -16,10 +16,11 @@ from interview_agent_runtime.agents import (
 from interview_agent_runtime.artifacts import AgentArtifact, AnswerArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.checkpoint import CheckpointStore, InMemoryCheckpointStore
+from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
 from interview_agent_runtime.runtime.execution_policy import ExecutionPolicy, TaskExecutor
 from interview_agent_runtime.runtime.state_machine import InterviewStateMachine
-from interview_agent_runtime.runtime.states import InterviewStage
+from interview_agent_runtime.domain import InterviewStage
 from interview_agent_runtime.skills import SkillRegistry
 from interview_agent_runtime.tools import ToolExecutor, ToolPolicy, ToolRegistry
 from interview_agent_runtime.tools.default_tools import build_default_tool_registry
@@ -45,6 +46,7 @@ class InterviewRuntime:
         checkpoint_store: Optional[CheckpointStore] = None,
         event_bus: Optional[InMemoryEventBus] = None,
         executor: Optional[TaskExecutor] = None,
+        context_builder: Optional[AgentContextBuilder] = None,
     ) -> None:
         self.state_machine = state_machine or InterviewStateMachine()
         self.agent_registry = agent_registry or self._default_agents()
@@ -55,6 +57,7 @@ class InterviewRuntime:
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
         self.event_bus = event_bus or InMemoryEventBus()
         self.executor = executor or TaskExecutor()
+        self.context_builder = context_builder or AgentContextBuilder()
 
     async def start_session(
         self,
@@ -141,16 +144,33 @@ class InterviewRuntime:
         skill = self.skill_registry.resolve(agent.required_skill(context))
         visible_tools = self.tool_policy.authorize(agent.name, skill)
         policy = ExecutionPolicy(timeout_seconds=skill.timeout, retry=skill.retry, name=f"{agent.name}:{skill.name}")
+        execution_context = ExecutionContext(
+            session_id=session_id,
+            current_stage=previous,
+            current_agent=agent.name,
+            current_skill=skill.name,
+            authorized_tools=visible_tools,
+            token_budget=skill.max_tokens,
+            timeout_seconds=skill.timeout,
+            retry=skill.retry,
+        )
+        agent_context = self.context_builder.build(agent.name, context, execution_context)
         await self.event_bus.emit(
             RuntimeEvent(
                 RuntimeEventType.AGENT_STARTED,
                 session_id,
-                metadata={"agent": agent.name, "stage": previous.value, "skill": skill.name},
+                metadata={
+                    "agent": agent.name,
+                    "stage": previous.value,
+                    "skill": skill.name,
+                    "context_type": type(agent_context).__name__,
+                    "authorized_tools": sorted(visible_tools),
+                },
             )
         )
 
         result = await self.executor.execute(
-            lambda: agent.execute(context, skill, self.tool_executor, visible_tools),
+            lambda: agent.execute(context, agent_context, skill, self.tool_executor, visible_tools),
             policy,
         )
         if not result.ok or result.value is None:

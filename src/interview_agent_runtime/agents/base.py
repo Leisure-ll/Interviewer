@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 from interview_agent_runtime.artifacts import AgentArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
-from interview_agent_runtime.runtime.states import InterviewStage
+from interview_agent_runtime.context import AgentContext
+from interview_agent_runtime.domain import InterviewStage
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolExecutor
 
@@ -32,6 +33,7 @@ class BaseInterviewAgent(ABC):
     async def execute(
         self,
         context: InterviewBlackboard,
+        agent_context: AgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
@@ -54,5 +56,11 @@ class InterviewAgentRegistry:
             return self._agents[self._stage_map[stage]]
         except KeyError as exc:
             raise KeyError(f"No agent registered for stage: {stage.value}") from exc
+
+    def agent_names(self) -> set[str]:
+        return set(self._agents)
+
+    def registered_stages(self) -> set[InterviewStage]:
+        return set(self._stage_map)
 
 

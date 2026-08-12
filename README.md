@@ -9,7 +9,7 @@ abstraction and removes LangGraph from the core runtime.
 Build an artifact-driven interview runtime:
 
 ```text
-State -> Agent -> Skill -> Authorized Tools -> Artifact -> Blackboard -> Transition -> Checkpoint/Event
+Harness -> Runtime -> Context Projection -> Agent -> Skill -> Authorized Tools -> Artifact -> Blackboard -> Transition -> Checkpoint/Event
 ```
 
 The current phase contains a runnable AI interview loop:
@@ -56,19 +56,65 @@ checkpoint restore, and the full interview flow.
 ## Current Architecture
 
 ```text
+InterviewHarness
+  -> providers / registries / policies / checkpoint / context builder
+  -> create_runtime()
 InterviewRuntime
-  -> FSM
+  -> FSM / TransitionGuard
+  -> ExecutionContext
+  -> AgentContextBuilder
   -> Specialist Agent
   -> Skill
   -> Authorized Tools
   -> Artifact
   -> Blackboard
   -> Evidence / CapabilityProfile
-  -> Checkpoint / Event
+  -> Checkpoint / EventBus
 ```
 
 Core runtime remains independent from FastAPI, LangGraph, Qdrant, Redis, MySQL, ASR,
 TTS, and digital-human vendors. Those systems should be connected through adapters.
+
+## Harness / Runtime Boundary
+
+`InterviewHarness` owns system assembly:
+
+- mode configuration: `mock`, `development`, `production`
+- agent registry
+- skill registry loaded from `SKILL.md`
+- tool registry and tool policy
+- checkpoint store selection
+- context builder and context budget
+- event bus
+
+`InterviewRuntime` owns a single interview session:
+
+- state transition
+- agent dispatch
+- skill resolution
+- tool authorization
+- execution policy
+- blackboard publishing
+- checkpoint timing
+- runtime events
+
+Harness does not transition FSM state or mutate `InterviewBlackboard`.
+
+## Context Projection
+
+Agents do not receive an undifferentiated prompt context. `AgentContextBuilder` projects
+`InterviewBlackboard` into typed, minimal contexts:
+
+- `ProfileAgentContext`: raw resume and JD.
+- `PlannerAgentContext`: candidate, position, capability, evidence, current plan.
+- `QuestionAgentContext`: current dimension, plan, capability, important evidence, recent questions.
+- `EvaluationAgentContext`: current question, answer, expected points, reference, relevant evidence.
+- `FollowUpAgentContext`: current question, answer, evaluation, missing points, follow-up history.
+- `ReportAgentContext`: plan summary, capability profile, scores, key evidence, evaluation summary.
+
+The context budget limits recent questions, recent answers, evidence items, and future
+LLM context size. Capability-oriented compression keeps verified, weak, uncertain,
+coverage, evidence, and unresolved gaps rather than a generic chat summary.
 
 ## Adaptive Interview
 

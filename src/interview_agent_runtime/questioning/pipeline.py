@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from interview_agent_runtime.artifacts import QuestionArtifact, artifact_id
 from interview_agent_runtime.blackboard import InterviewBlackboard
+from interview_agent_runtime.context import QuestionAgentContext
 from interview_agent_runtime.domain import InterviewDimension
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolContext, ToolExecutor
@@ -20,15 +21,16 @@ class QuestionGenerationPipeline:
     async def generate(
         self,
         context: InterviewBlackboard,
+        agent_context: QuestionAgentContext,
         skill: SkillDefinition,
         tools: ToolExecutor,
         visible_tools: set[str],
         agent_name: str,
     ) -> QuestionArtifact:
         if context.current_stage.value == "FOLLOW_UP":
-            return self._build_follow_up(context, agent_name)
+            return self._build_follow_up(context, agent_context, agent_name)
 
-        dimension = self._select_dimension(context)
+        dimension = self._select_dimension(context, agent_context)
         candidates = await self._retrieve_candidates(context, skill, tools, visible_tools, agent_name, dimension)
         for item in candidates:
             question = self._candidate_to_artifact(item, dimension, agent_name)
@@ -98,10 +100,10 @@ class QuestionGenerationPipeline:
                 return True
         return False
 
-    def _select_dimension(self, context: InterviewBlackboard) -> InterviewDimension:
-        if context.plan is None:
+    def _select_dimension(self, context: InterviewBlackboard, agent_context: QuestionAgentContext) -> InterviewDimension:
+        if agent_context.current_plan is None:
             raise RuntimeError("Cannot generate question without interview plan")
-        dimension = context.plan.next_dimension(context.dimension_coverage)
+        dimension = agent_context.current_plan.next_dimension(agent_context.capability_profile.dimension_coverage)
         if dimension is None:
             raise RuntimeError("No remaining interview dimension")
         context.current_dimension = dimension.name
@@ -139,7 +141,12 @@ class QuestionGenerationPipeline:
             related_skills=[dimension.name],
         )
 
-    def _build_follow_up(self, context: InterviewBlackboard, agent_name: str) -> QuestionArtifact:
+    def _build_follow_up(
+        self,
+        context: InterviewBlackboard,
+        agent_context: QuestionAgentContext,
+        agent_name: str,
+    ) -> QuestionArtifact:
         decision = context.latest_follow_up_decision
         question = context.current_question
         target = decision.target if decision and decision.target else "关键细节"
