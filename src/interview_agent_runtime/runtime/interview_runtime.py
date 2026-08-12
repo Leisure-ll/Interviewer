@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from interview_agent_runtime.agents import (
@@ -56,8 +56,20 @@ class InterviewRuntime:
         self.event_bus = event_bus or InMemoryEventBus()
         self.executor = executor or TaskExecutor()
 
-    async def start_session(self, session_id: Optional[str] = None) -> InterviewBlackboard:
+    async def start_session(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        resume: Optional[dict[str, Any]] = None,
+        jd: Optional[dict[str, Any]] = None,
+        candidate_id: Optional[str] = None,
+    ) -> InterviewBlackboard:
         board = InterviewBlackboard(session_id=session_id or f"session_{uuid4().hex[:12]}")
+        board.session_inputs = {
+            "resume": resume or {},
+            "jd": jd or {},
+            "candidate_id": candidate_id,
+        }
         await self.checkpoint_store.save(board)
         await self.event_bus.emit(RuntimeEvent(RuntimeEventType.SESSION_STARTED, board.session_id))
         return board
@@ -68,13 +80,26 @@ class InterviewRuntime:
             raise KeyError(f"Session not found: {session_id}")
         return context
 
-    async def receive_answer(self, session_id: str, text: str) -> RuntimeStepResult:
+    async def receive_answer(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        source: str = "text",
+        duration_seconds: Optional[float] = None,
+    ) -> RuntimeStepResult:
         context = await self.load_context(session_id)
         if context.current_stage != InterviewStage.LISTENING:
             raise RuntimeError(f"Session is not listening: {context.current_stage.value}")
         if context.current_question is None:
             raise RuntimeError("No current question")
-        artifact = AnswerArtifact(owner="Candidate", question_id=context.current_question.question_id, text=text)
+        artifact = AnswerArtifact(
+            owner="Candidate",
+            question_id=context.current_question.question_id,
+            text=text,
+            source=source,
+            duration_seconds=duration_seconds,
+        )
         context.publish(artifact)
         previous = context.current_stage
         context.current_stage = self.state_machine.transition(previous, context, artifact)
@@ -116,6 +141,13 @@ class InterviewRuntime:
         skill = self.skill_registry.resolve(agent.required_skill(context))
         visible_tools = self.tool_policy.authorize(agent.name, skill)
         policy = ExecutionPolicy(timeout_seconds=skill.timeout, retry=skill.retry, name=f"{agent.name}:{skill.name}")
+        await self.event_bus.emit(
+            RuntimeEvent(
+                RuntimeEventType.AGENT_STARTED,
+                session_id,
+                metadata={"agent": agent.name, "stage": previous.value, "skill": skill.name},
+            )
+        )
 
         result = await self.executor.execute(
             lambda: agent.execute(context, skill, self.tool_executor, visible_tools),
@@ -134,6 +166,13 @@ class InterviewRuntime:
 
         await self.checkpoint_store.save(context)
         await self._emit_artifact_event(context, artifact, previous)
+        await self.event_bus.emit(
+            RuntimeEvent(
+                RuntimeEventType.AGENT_FINISHED,
+                session_id,
+                metadata={"agent": agent.name, "stage": previous.value, "artifact": artifact.kind},
+            )
+        )
         await self.event_bus.emit(
             RuntimeEvent(
                 RuntimeEventType.STATE_TRANSITIONED,
@@ -162,7 +201,7 @@ class InterviewRuntime:
             "interview_plan": RuntimeEventType.PLAN_CREATED,
             "question": RuntimeEventType.QUESTION_GENERATED,
             "evaluation": RuntimeEventType.ANSWER_EVALUATED,
-            "follow_up_decision": RuntimeEventType.FOLLOW_UP_TRIGGERED,
+            "follow_up_decision": RuntimeEventType.FOLLOW_UP_DECIDED,
             "interview_report": RuntimeEventType.REPORT_GENERATED,
         }
         event_type = mapping.get(artifact.kind, RuntimeEventType.CHECKPOINT_CREATED)

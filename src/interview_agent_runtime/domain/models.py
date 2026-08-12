@@ -31,6 +31,7 @@ class CandidateProfile:
     education: list[EducationExperience] = field(default_factory=list)
     strengths: list[str] = field(default_factory=list)
     possible_weaknesses: list[str] = field(default_factory=list)
+    potential_gaps: list[str] = field(default_factory=list)
     resume_keywords: list[str] = field(default_factory=list)
 
 
@@ -42,6 +43,7 @@ class PositionProfile:
     responsibilities: list[str] = field(default_factory=list)
     competency_dimensions: list[str] = field(default_factory=list)
     seniority: Optional[str] = None
+    keywords: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -54,6 +56,8 @@ class InterviewDimension:
     coverage_target: float
     difficulty: str
     asked_questions: int = 0
+    current_coverage: float = 0.0
+    evidence_count: int = 0
     completed: bool = False
 
 
@@ -63,15 +67,26 @@ class InterviewPlan:
     total_question_budget: int
     total_follow_up_budget: int
     estimated_duration_minutes: int
+    current_dimension_index: int = 0
 
     def next_dimension(self, coverage: dict[str, float]) -> Optional[InterviewDimension]:
-        open_dimensions = [item for item in self.dimensions if not item.completed and item.question_budget > item.asked_questions]
+        for item in self.dimensions:
+            item.current_coverage = max(item.current_coverage, coverage.get(item.name, 0.0))
+            if item.current_coverage >= item.coverage_target:
+                item.completed = True
+        open_dimensions = [
+            item
+            for item in self.dimensions
+            if not item.completed and item.question_budget > item.asked_questions
+        ]
         if not open_dimensions:
             return None
-        return sorted(
+        selected = sorted(
             open_dimensions,
             key=lambda item: (coverage.get(item.name, 0.0) >= item.coverage_target, -item.weight),
         )[0]
+        self.current_dimension_index = self.dimensions.index(selected)
+        return selected
 
     def mark_question_asked(self, dimension_name: str) -> None:
         for item in self.dimensions:
@@ -79,11 +94,41 @@ class InterviewPlan:
                 item.asked_questions += 1
                 return
 
-    def mark_dimension_if_covered(self, dimension_name: str, coverage: float) -> None:
+    def update_after_evaluation(
+        self,
+        dimension_name: str,
+        coverage: float,
+        evidence_count: int,
+    ) -> int:
+        """Update one dimension and return any released unused question budget."""
         for item in self.dimensions:
-            if item.name == dimension_name and coverage >= item.coverage_target:
+            if item.name != dimension_name:
+                continue
+            item.current_coverage = max(item.current_coverage, coverage)
+            item.evidence_count += evidence_count
+            if item.current_coverage >= item.coverage_target:
                 item.completed = True
-                return
+                released = max(0, item.question_budget - item.asked_questions)
+                item.question_budget = item.asked_questions
+                self._redistribute_question_budget(released, exclude=dimension_name)
+                return released
+            return 0
+        return 0
+
+    def _redistribute_question_budget(self, released: int, exclude: str) -> None:
+        if released <= 0:
+            return
+        targets = [
+            item
+            for item in self.dimensions
+            if item.name != exclude and not item.completed
+        ]
+        targets.sort(key=lambda item: (-item.weight, item.asked_questions))
+        if targets:
+            targets[0].question_budget += released
+
+    def has_remaining_questions(self, coverage: dict[str, float]) -> bool:
+        return self.next_dimension(coverage) is not None
 
 
 @dataclass
@@ -95,6 +140,9 @@ class Question:
     reference_answer: str = ""
     source: str = "generated"
     tags: list[str] = field(default_factory=list)
+    question_type: str = "technical"
+    expected_points: list[str] = field(default_factory=list)
+    related_skills: list[str] = field(default_factory=list)
 
 
 @dataclass

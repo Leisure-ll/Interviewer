@@ -69,6 +69,8 @@ class QuestionGenerationPipeline:
             reasons.append("too_short")
         if question.question_id in context.asked_question_ids:
             reasons.append("duplicate_id")
+        if self._similar_to_history(question, context):
+            reasons.append("duplicate_semantic")
         expected_dimension = context.current_dimension
         if context.plan is not None:
             selected = context.plan.next_dimension(context.dimension_coverage)
@@ -78,7 +80,23 @@ class QuestionGenerationPipeline:
             reasons.append("dimension_mismatch")
         if any(word in question.title.lower() for word in ["年龄", "婚育", "宗教"]):
             reasons.append("sensitive")
+        if context.position_profile:
+            keywords = set(context.position_profile.keywords + context.position_profile.required_skills + context.position_profile.preferred_skills)
+            related = set(question.related_skills + question.tags + [question.dimension])
+            if keywords and not (keywords & related) and question.dimension not in context.position_profile.competency_dimensions:
+                reasons.append("job_irrelevant")
         return QuestionValidationResult(not reasons, reasons)
+
+    def _similar_to_history(self, question: QuestionArtifact, context: InterviewBlackboard) -> bool:
+        fingerprint = _fingerprint(question.title)
+        for item in context.question_history[-5:]:
+            previous = _fingerprint(item.title)
+            if not previous:
+                continue
+            overlap = len(fingerprint & previous) / max(1, min(len(fingerprint), len(previous)))
+            if overlap >= 0.75:
+                return True
+        return False
 
     def _select_dimension(self, context: InterviewBlackboard) -> InterviewDimension:
         if context.plan is None:
@@ -99,6 +117,8 @@ class QuestionGenerationPipeline:
             reference_answer=item.get("reference_answer", ""),
             source=item.get("source", "question_bank"),
             target_evidence=item.get("target_evidence", []),
+            expected_points=item.get("expected_points", item.get("target_evidence", [])),
+            related_skills=item.get("related_skills", []),
             tags=item.get("tags", []),
         )
 
@@ -115,6 +135,8 @@ class QuestionGenerationPipeline:
             reference_answer="需要包含场景、约束、方案、权衡、结果和复盘。",
             source="runtime_fallback",
             target_evidence=["场景", "方案", "权衡", "结果"],
+            expected_points=["场景", "约束", "方案", "权衡", "结果"],
+            related_skills=[dimension.name],
         )
 
     def _build_follow_up(self, context: InterviewBlackboard, agent_name: str) -> QuestionArtifact:
@@ -133,5 +155,30 @@ class QuestionGenerationPipeline:
             source="follow_up",
             is_follow_up=True,
             target_evidence=[target],
+            expected_points=[target, "具体做法", "异常处理", "结果"],
+            related_skills=question.related_skills if question else [],
             parent_question_id=parent_id,
         )
+
+
+def _fingerprint(text: str) -> set[str]:
+    normalized = "".join(ch.lower() for ch in text if ch.isalnum())
+    terms = set()
+    for keyword in [
+        "redis",
+        "缓存",
+        "一致性",
+        "消息队列",
+        "agent",
+        "状态机",
+        "工具",
+        "checkpoint",
+        "恢复",
+        "限流",
+        "降级",
+    ]:
+        if keyword in normalized:
+            terms.add(keyword)
+    if not terms:
+        terms = {normalized[i : i + 2] for i in range(max(0, len(normalized) - 1))}
+    return terms

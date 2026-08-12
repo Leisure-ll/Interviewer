@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from interview_agent_runtime.artifacts import (
     AgentArtifact,
@@ -16,6 +16,7 @@ from interview_agent_runtime.artifacts import (
     QuestionArtifact,
 )
 from interview_agent_runtime.domain import CapabilityProfile, CandidateProfile, InterviewPlan, InterviewStage, PositionProfile
+from interview_agent_runtime.planning import InterviewPlanPolicy
 
 
 @dataclass
@@ -32,12 +33,14 @@ class RuntimeMetadata:
 @dataclass
 class InterviewBlackboard:
     session_id: str
+    session_inputs: dict[str, Any] = field(default_factory=dict)
     candidate_profile: Optional[CandidateProfileArtifact] = None
     position_profile: Optional[PositionProfile] = None
     interview_plan: Optional[InterviewPlanArtifact] = None
     current_stage: InterviewStage = InterviewStage.INIT
     current_dimension: str = ""
     current_question: Optional[QuestionArtifact] = None
+    question_history: list[QuestionArtifact] = field(default_factory=list)
     answers: list[AnswerArtifact] = field(default_factory=list)
     evaluations: list[EvaluationArtifact] = field(default_factory=list)
     follow_up_decisions: list[FollowUpDecisionArtifact] = field(default_factory=list)
@@ -51,6 +54,7 @@ class InterviewBlackboard:
     followed_targets: set[str] = field(default_factory=set)
     question_follow_up_rounds: dict[str, int] = field(default_factory=dict)
     runtime_metadata: RuntimeMetadata = field(default_factory=RuntimeMetadata)
+    plan_policy: InterviewPlanPolicy = field(default_factory=InterviewPlanPolicy, repr=False, compare=False)
 
     @property
     def candidate(self) -> Optional[CandidateProfile]:
@@ -82,6 +86,7 @@ class InterviewBlackboard:
             return
         if isinstance(artifact, QuestionArtifact):
             self.current_question = artifact
+            self.question_history.append(artifact)
             self.current_dimension = artifact.dimension
             self.asked_question_ids.add(artifact.question_id)
             if artifact.is_follow_up:
@@ -101,8 +106,12 @@ class InterviewBlackboard:
             for dimension, score in artifact.dimension_scores.items():
                 count = len([item for item in artifact.evidence if item.dimension == dimension])
                 self.capability_profile.update_dimension(dimension, score, count, artifact.missing_points)
-                if self.plan is not None:
-                    self.plan.mark_dimension_if_covered(dimension, self.capability_profile.dimension_coverage.get(dimension, 0.0))
+            if self.plan is not None:
+                self.plan_policy.update_after_evaluation(
+                    self.plan,
+                    artifact,
+                    self.capability_profile.dimension_coverage,
+                )
             return
         if isinstance(artifact, FollowUpDecisionArtifact):
             self.follow_up_decisions.append(artifact)
@@ -117,6 +126,22 @@ class InterviewBlackboard:
             return 0
         question_id = self.current_question.parent_question_id or self.current_question.question_id
         return self.question_follow_up_rounds.get(question_id, 0)
+
+    def current_dimension_follow_up_budget(self) -> int:
+        if self.plan is None or not self.current_dimension:
+            return 0
+        for dimension in self.plan.dimensions:
+            if dimension.name == self.current_dimension:
+                return dimension.follow_up_budget
+        return 0
+
+    def consume_dimension_follow_up_budget(self) -> None:
+        if self.plan is None:
+            return
+        for dimension in self.plan.dimensions:
+            if dimension.name == self.current_dimension and dimension.follow_up_budget > 0:
+                dimension.follow_up_budget -= 1
+                return
 
     def session_not_timeout(self) -> bool:
         elapsed = (datetime.now(timezone.utc) - self.runtime_metadata.started_at).total_seconds()

@@ -49,6 +49,7 @@ class ProfileAgent(BaseInterviewAgent):
             project_experiences=list(resume.get("project_experiences", [])),
             strengths=list(resume.get("strengths", [])),
             possible_weaknesses=list(resume.get("possible_weaknesses", [])),
+            potential_gaps=list(resume.get("potential_gaps", resume.get("possible_weaknesses", []))),
             resume_keywords=list(resume.get("resume_keywords", resume.get("skills", []))),
         )
         position = PositionProfile(
@@ -58,6 +59,7 @@ class ProfileAgent(BaseInterviewAgent):
             responsibilities=list(jd.get("responsibilities", [])),
             competency_dimensions=list(jd.get("dimensions", [])),
             seniority=jd.get("seniority"),
+            keywords=list(jd.get("keywords", jd.get("required_skills", []))),
         )
         return CandidateProfileArtifact(
             owner=self.name,
@@ -87,18 +89,29 @@ class PlannerAgent(BaseInterviewAgent):
         position = context.position_profile
         if position is None and context.candidate_profile is not None:
             position = context.candidate_profile.position_profile
-        dimension_names = position.competency_dimensions if position else ["Java Backend", "Agent Engineering"]
+        candidate = context.candidate
+        dimension_names = list(position.competency_dimensions if position else ["Java Backend", "Agent Engineering"])
+        if candidate:
+            skills = set(candidate.skills + candidate.resume_keywords)
+            if {"Redis", "Kafka", "MySQL"} & skills and "Project Experience" not in dimension_names:
+                dimension_names.append("Project Experience")
+            if "System Design" not in dimension_names and {"高并发", "秒杀", "System Design"} & skills:
+                dimension_names.append("System Design")
         required = set(position.required_skills if position else [])
+        preferred = set(position.preferred_skills if position else [])
+        candidate_skills = set(candidate.skills if candidate else [])
+        weights = self._dimension_weights(dimension_names, required, preferred, candidate_skills)
         dimensions = []
         for name in dimension_names:
             is_core = name in required or name.lower() in {"java backend", "java core", "project experience"}
+            is_claimed = name in candidate_skills or any(skill.lower() in name.lower() for skill in candidate_skills)
             dimensions.append(
                 InterviewDimension(
                     name=name,
-                    weight=round(1.0 / max(1, len(dimension_names)), 2),
-                    target_level="production" if is_core else "working",
-                    question_budget=2 if is_core else 1,
-                    follow_up_budget=1 if is_core else 0,
+                    weight=weights[name],
+                    target_level="production" if is_core or is_claimed else "working",
+                    question_budget=2 if is_core or is_claimed else 1,
+                    follow_up_budget=1 if is_core or is_claimed else 0,
                     coverage_target=0.65,
                     difficulty="hard" if is_core else "medium",
                 )
@@ -117,10 +130,37 @@ class PlannerAgent(BaseInterviewAgent):
             confidence=0.88 if rubric.get("rubric") else 0.75,
         )
 
+    def _dimension_weights(
+        self,
+        dimension_names: list[str],
+        required: set[str],
+        preferred: set[str],
+        candidate_skills: set[str],
+    ) -> dict[str, float]:
+        raw: dict[str, float] = {}
+        for name in dimension_names:
+            score = 1.0
+            if name in required:
+                score += 1.2
+            if name in preferred:
+                score += 0.6
+            if any(skill.lower() in name.lower() for skill in candidate_skills):
+                score += 0.5
+            if name == "Project Experience":
+                score += 0.4
+            raw[name] = score
+        total = sum(raw.values()) or 1.0
+        return {name: round(value / total, 2) for name, value in raw.items()}
+
 
 class QuestionAgent(BaseInterviewAgent):
     name = "QuestionAgent"
-    stages = {InterviewStage.QUESTION_PREPARING, InterviewStage.NEXT_QUESTION, InterviewStage.FOLLOW_UP}
+    stages = {
+        InterviewStage.QUESTION_PREPARING,
+        InterviewStage.NEXT_QUESTION,
+        InterviewStage.NEXT_DIMENSION,
+        InterviewStage.FOLLOW_UP,
+    }
 
     def __init__(self, pipeline: Optional[QuestionGenerationPipeline] = None):
         self.pipeline = pipeline or QuestionGenerationPipeline()
@@ -215,6 +255,12 @@ class ReportAgent(BaseInterviewAgent):
         else:
             recommendation = "当前证据不足以支持通过"
         role = context.position_profile.role_name if context.position_profile else ""
+        role_match_score = round(
+            overall * 0.7
+            + min(100.0, len(verified) * 25.0) * 0.2
+            + max(0.0, 100.0 - len(uncertain) * 12.0) * 0.1,
+            1,
+        )
         return InterviewReportArtifact(
             owner=self.name,
             overall_score=overall,
@@ -223,6 +269,7 @@ class ReportAgent(BaseInterviewAgent):
             weak_skills=weak,
             evidence=list(context.evidence),
             role_match=f"{role}：基于 {len(verified)} 个已验证维度评估",
+            role_match_score=role_match_score,
             insufficient_evidence_areas=uncertain,
             interview_summary=f"完成 {len(context.answers)} 次回答，提取 {len(context.evidence)} 条能力证据。",
             hiring_recommendation=recommendation,

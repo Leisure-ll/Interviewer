@@ -67,12 +67,14 @@ class JsonFileCheckpointStore:
 
 def _blackboard_from_json(data: dict[str, Any]) -> InterviewBlackboard:
     board = InterviewBlackboard(session_id=data["session_id"])
+    board.session_inputs = dict(data.get("session_inputs", {}))
     board.current_stage = InterviewStage(data.get("current_stage", InterviewStage.INIT.value))
     board.current_dimension = data.get("current_dimension", "")
     board.position_profile = _position(data.get("position_profile"))
     board.candidate_profile = _candidate_artifact(data.get("candidate_profile"))
     board.interview_plan = _plan_artifact(data.get("interview_plan"))
     board.current_question = _question(data.get("current_question"))
+    board.question_history = [_question(item) for item in data.get("question_history", []) if item]
     board.answers = [_answer(item) for item in data.get("answers", [])]
     board.evaluations = [_evaluation(item) for item in data.get("evaluations", [])]
     board.follow_up_decisions = [_follow_up(item) for item in data.get("follow_up_decisions", [])]
@@ -113,6 +115,7 @@ def _candidate(data: dict[str, Any]) -> CandidateProfile:
         education=[EducationExperience(**item) for item in data.get("education", [])],
         strengths=list(data.get("strengths", [])),
         possible_weaknesses=list(data.get("possible_weaknesses", [])),
+        potential_gaps=list(data.get("potential_gaps", [])),
         resume_keywords=list(data.get("resume_keywords", [])),
     )
 
@@ -127,6 +130,7 @@ def _position(data: Optional[dict[str, Any]]) -> Optional[PositionProfile]:
         responsibilities=list(data.get("responsibilities", [])),
         competency_dimensions=list(data.get("competency_dimensions", [])),
         seniority=data.get("seniority"),
+        keywords=list(data.get("keywords", [])),
     )
 
 
@@ -145,6 +149,7 @@ def _plan(data: dict[str, Any]) -> InterviewPlan:
         total_question_budget=data.get("total_question_budget", sum(item.question_budget for item in dimensions)),
         total_follow_up_budget=data.get("total_follow_up_budget", sum(item.follow_up_budget for item in dimensions)),
         estimated_duration_minutes=data.get("estimated_duration_minutes", 0),
+        current_dimension_index=data.get("current_dimension_index", 0),
     )
 
 
@@ -157,11 +162,15 @@ def _question(data: Optional[dict[str, Any]]) -> Optional[QuestionArtifact]:
         title=data.get("title", ""),
         dimension=data.get("dimension", ""),
         description=data.get("description", ""),
+        text=data.get("text"),
         difficulty=data.get("difficulty", "medium"),
+        question_type=data.get("question_type", "technical"),
         reference_answer=data.get("reference_answer", ""),
         source=data.get("source", "llm"),
         is_follow_up=data.get("is_follow_up", False),
         target_evidence=list(data.get("target_evidence", [])),
+        expected_points=list(data.get("expected_points", [])),
+        related_skills=list(data.get("related_skills", [])),
         tags=list(data.get("tags", [])),
         parent_question_id=data.get("parent_question_id"),
     )
@@ -170,7 +179,13 @@ def _question(data: Optional[dict[str, Any]]) -> Optional[QuestionArtifact]:
 
 
 def _answer(data: dict[str, Any]) -> AnswerArtifact:
-    artifact = AnswerArtifact(owner=data.get("owner", "Candidate"), question_id=data.get("question_id", ""), text=data.get("text", ""))
+    artifact = AnswerArtifact(
+        owner=data.get("owner", "Candidate"),
+        question_id=data.get("question_id", ""),
+        text=data.get("text", ""),
+        source=data.get("source", "text"),
+        duration_seconds=data.get("duration_seconds"),
+    )
     artifact.answer_id = data.get("answer_id", artifact.answer_id)
     artifact.normalized_text = data.get("normalized_text", artifact.normalized_text)
     _copy_base(artifact, data)
@@ -238,9 +253,11 @@ def _evidence(data: dict[str, Any]) -> Evidence:
         quote_or_summary=data.get("quote_or_summary", data.get("answer_excerpt", "")),
         confidence=data.get("confidence", 0.0),
         evidence_id=data.get("evidence_id", ""),
+        skill=data.get("skill"),
         source_question_id=data.get("source_question_id", ""),
         answer_excerpt=data.get("answer_excerpt", data.get("quote_or_summary", "")),
         evidence_type=data.get("evidence_type", "positive"),
+        polarity=data.get("polarity", data.get("evidence_type", "positive")),
     )
 
 

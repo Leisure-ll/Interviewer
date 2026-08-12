@@ -71,13 +71,17 @@ class InterviewPlanArtifact(AgentArtifact):
 class QuestionArtifact(AgentArtifact):
     question_id: str = ""
     title: str = ""
+    text: str = ""
     description: str = ""
     dimension: str = ""
     difficulty: str = "medium"
+    question_type: str = "technical"
     reference_answer: str = ""
     source: str = "llm"
     is_follow_up: bool = False
     target_evidence: list[str] = field(default_factory=list)
+    expected_points: list[str] = field(default_factory=list)
+    related_skills: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     parent_question_id: Optional[str] = None
 
@@ -87,25 +91,33 @@ class QuestionArtifact(AgentArtifact):
         question_id: str,
         title: str,
         dimension: str,
+        text: Optional[str] = None,
         description: str = "",
         difficulty: str = "medium",
+        question_type: str = "technical",
         reference_answer: str = "",
         source: str = "llm",
         is_follow_up: bool = False,
         target_evidence: Optional[list[str]] = None,
+        expected_points: Optional[list[str]] = None,
+        related_skills: Optional[list[str]] = None,
         tags: Optional[list[str]] = None,
         parent_question_id: Optional[str] = None,
     ):
         super().__init__(kind="question", owner=owner)
         self.question_id = question_id
         self.title = title
+        self.text = text or title
         self.description = description
         self.dimension = dimension
         self.difficulty = difficulty
+        self.question_type = question_type
         self.reference_answer = reference_answer
         self.source = source
         self.is_follow_up = is_follow_up
         self.target_evidence = target_evidence or []
+        self.expected_points = expected_points or list(self.target_evidence)
+        self.related_skills = related_skills or []
         self.tags = tags or []
         self.parent_question_id = parent_question_id
 
@@ -116,13 +128,24 @@ class AnswerArtifact(AgentArtifact):
     answer_id: str = ""
     text: str = ""
     normalized_text: str = ""
+    source: str = "text"
+    duration_seconds: Optional[float] = None
 
-    def __init__(self, owner: str, question_id: str, text: str):
+    def __init__(
+        self,
+        owner: str,
+        question_id: str,
+        text: str,
+        source: str = "text",
+        duration_seconds: Optional[float] = None,
+    ):
         super().__init__(kind="answer", owner=owner)
         self.question_id = question_id
         self.answer_id = artifact_id("answer")
         self.text = text
         self.normalized_text = " ".join(text.strip().split())
+        self.source = source
+        self.duration_seconds = duration_seconds
 
 
 @dataclass
@@ -133,9 +156,11 @@ class Evidence:
     quote_or_summary: str
     confidence: float
     evidence_id: str = field(default_factory=lambda: artifact_id("evidence"))
+    skill: Optional[str] = None
     source_question_id: str = ""
     answer_excerpt: str = ""
     evidence_type: str = "positive"
+    polarity: str = "positive"
 
 
 @dataclass
@@ -209,6 +234,7 @@ class FollowUpDecisionArtifact(AgentArtifact):
 @dataclass
 class InterviewReportArtifact(AgentArtifact):
     overall_score: float = 0.0
+    role_match_score: float = 0.0
     role_match: str = ""
     dimension_scores: dict[str, float] = field(default_factory=dict)
     verified_strengths: list[str] = field(default_factory=list)
@@ -231,6 +257,7 @@ class InterviewReportArtifact(AgentArtifact):
         weak_skills: list[str],
         evidence: list[Evidence],
         role_match: str = "",
+        role_match_score: Optional[float] = None,
         insufficient_evidence_areas: Optional[list[str]] = None,
         interview_summary: str = "",
         hiring_recommendation: str = "",
@@ -238,6 +265,7 @@ class InterviewReportArtifact(AgentArtifact):
     ):
         super().__init__(kind="interview_report", owner=owner)
         self.overall_score = overall_score
+        self.role_match_score = role_match_score if role_match_score is not None else overall_score
         self.role_match = role_match
         self.dimension_scores = dimension_scores
         self.verified_skills = verified_skills

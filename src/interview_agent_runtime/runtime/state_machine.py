@@ -30,6 +30,8 @@ class TransitionGuard:
             return False
         if context.follow_up_budget <= 0:
             return False
+        if context.current_dimension_follow_up_budget() <= 0:
+            return False
         if not context.session_not_timeout():
             return False
         if not decision.target:
@@ -69,7 +71,12 @@ class InterviewStateMachine:
             return InterviewStage.INTERVIEW_PLANNING
         if state == InterviewStage.INTERVIEW_PLANNING and isinstance(artifact, InterviewPlanArtifact):
             return InterviewStage.QUESTION_PREPARING
-        if state in {InterviewStage.QUESTION_PREPARING, InterviewStage.NEXT_QUESTION, InterviewStage.FOLLOW_UP}:
+        if state in {
+            InterviewStage.QUESTION_PREPARING,
+            InterviewStage.NEXT_QUESTION,
+            InterviewStage.NEXT_DIMENSION,
+            InterviewStage.FOLLOW_UP,
+        }:
             if isinstance(artifact, QuestionArtifact):
                 return InterviewStage.QUESTIONING
             return InterviewStage.FAILED
@@ -82,9 +89,13 @@ class InterviewStateMachine:
         if state == InterviewStage.DECISION and isinstance(artifact, FollowUpDecisionArtifact):
             if self.guard.allow_follow_up(context, artifact):
                 context.follow_up_budget -= 1
+                context.consume_dimension_follow_up_budget()
                 context.followed_targets.add(artifact.normalized_target)
                 return InterviewStage.FOLLOW_UP
             if self.guard.allow_next_question(context):
+                next_dimension = context.plan.next_dimension(context.dimension_coverage) if context.plan else None
+                if next_dimension is not None and context.current_dimension and next_dimension.name != context.current_dimension:
+                    return InterviewStage.NEXT_DIMENSION
                 return InterviewStage.NEXT_QUESTION
             return InterviewStage.REPORTING
         if state == InterviewStage.REPORTING and isinstance(artifact, InterviewReportArtifact):

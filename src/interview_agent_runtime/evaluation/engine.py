@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from interview_agent_runtime.artifacts import Evidence, EvaluationArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
@@ -16,12 +17,13 @@ class EvidenceDrivenEvaluator:
 
         text = answer.normalized_text
         lower_text = text.lower()
-        positives = self._positive_claims(question.dimension, lower_text)
-        missing = self._missing_points(question.dimension, lower_text, len(text))
+        positives = self._positive_claims(question.dimension, lower_text, question.expected_points)
+        missing = self._missing_points(question.dimension, lower_text, len(text), question.expected_points)
         score = self._score(positives, missing, len(text), question.is_follow_up)
         evidence = [
             Evidence(
                 dimension=question.dimension,
+                skill=self._claim_skill(claim, question.related_skills),
                 claim=claim,
                 source_answer_id=answer.answer_id,
                 source_question_id=question.question_id,
@@ -29,6 +31,7 @@ class EvidenceDrivenEvaluator:
                 answer_excerpt=text[:160],
                 confidence=0.82 if score >= 70 else 0.65,
                 evidence_type="positive",
+                polarity="positive",
             )
             for claim in positives
         ]
@@ -36,6 +39,7 @@ class EvidenceDrivenEvaluator:
             evidence.append(
                 Evidence(
                     dimension=question.dimension,
+                    skill=question.related_skills[0] if question.related_skills else None,
                     claim="回答过短或缺少可验证细节",
                     source_answer_id=answer.answer_id,
                     source_question_id=question.question_id,
@@ -43,6 +47,7 @@ class EvidenceDrivenEvaluator:
                     answer_excerpt=text[:160],
                     confidence=0.55,
                     evidence_type="insufficient",
+                    polarity="uncertain",
                 )
             )
         return EvaluationArtifact(
@@ -63,7 +68,7 @@ class EvidenceDrivenEvaluator:
             follow_up_target=missing[0] if missing else None,
         )
 
-    def _positive_claims(self, dimension: str, text: str) -> list[str]:
+    def _positive_claims(self, dimension: str, text: str, expected_points: list[str]) -> list[str]:
         rules = {
             "Java Backend": [
                 ("cache aside", "理解 Cache Aside 缓存模式"),
@@ -89,14 +94,20 @@ class EvidenceDrivenEvaluator:
             ],
         }
         claims = [claim for keyword, claim in rules.get(dimension, []) if keyword in text]
+        for point in expected_points:
+            if point and _point_matched(point, text):
+                claims.append(f"覆盖预期要点：{point}")
         if len(text) > 80:
             claims.append("回答包含一定实现细节")
-        return claims
+        return _dedupe(claims)
 
-    def _missing_points(self, dimension: str, text: str, length: int) -> list[str]:
+    def _missing_points(self, dimension: str, text: str, length: int, expected_points: list[str]) -> list[str]:
         missing = []
         if length < 40:
             missing.append("具体实现细节")
+        for point in expected_points:
+            if point and not _point_matched(point, text):
+                missing.append(point)
         if dimension == "Java Backend":
             if "失败" not in text and "重试" not in text and "补偿" not in text:
                 missing.append("失败补偿策略")
@@ -109,9 +120,38 @@ class EvidenceDrivenEvaluator:
                 missing.append("工具权限控制")
             if "checkpoint" not in text.lower() and "恢复" not in text:
                 missing.append("中断恢复")
-        return missing[:2]
+        return _dedupe(missing)[:3]
 
     def _score(self, positives: list[str], missing: list[str], length: int, is_follow_up: bool) -> float:
         score = 55.0 + min(25.0, len(positives) * 6.0) + min(10.0, length / 20.0)
         score -= len(missing) * (8.0 if not is_follow_up else 5.0)
         return max(20.0, min(95.0, round(score, 1)))
+
+    def _claim_skill(self, claim: str, related_skills: list[str]) -> Optional[str]:
+        for skill in related_skills:
+            if skill.lower() in claim.lower():
+                return skill
+        return related_skills[0] if related_skills else None
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    result = []
+    for item in items:
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _point_matched(point: str, text: str) -> bool:
+    point_text = point.lower().strip()
+    if point_text in text:
+        return True
+    aliases = {
+        "工具权限": ["权限控制", "工具调用"],
+        "工具权限控制": ["权限控制", "工具调用"],
+        "状态恢复": ["恢复", "checkpoint", "持久化"],
+        "异常处理": ["失败", "异常", "重试", "补偿"],
+        "具体做法": ["方案", "实现", "通过"],
+        "结果": ["结果", "验证", "监控"],
+    }
+    return any(alias.lower() in text for alias in aliases.get(point, []))

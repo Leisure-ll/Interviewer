@@ -37,6 +37,19 @@ async def _runtime_smoke():
 
     await runtime.receive_answer(board.session_id, "我会用状态机控制流程，用 artifact 写入 blackboard，再由 guard 决定迁移。")
     board = await runtime.run_until_waiting_or_done(board.session_id)
+    assert board.current_stage == InterviewStage.LISTENING
+    assert board.current_question is not None
+    assert board.current_question.dimension == "Agent Engineering"
+    assert board.current_question.is_follow_up is True
+
+    await runtime.receive_answer(board.session_id, "补充一下，工具调用要经过权限控制，checkpoint 要支持中断后恢复。")
+    board = await runtime.run_until_waiting_or_done(board.session_id)
+    assert board.current_stage == InterviewStage.LISTENING
+    assert board.current_question is not None
+    assert board.current_question.dimension == "Project Experience"
+
+    await runtime.receive_answer(board.session_id, "我在项目中负责后端接口、缓存优化和 Agent 状态恢复，能说明场景、约束、方案、权衡和结果。")
+    board = await runtime.run_until_waiting_or_done(board.session_id)
     assert board.current_stage == InterviewStage.FINISHED
     assert board.report is not None
     assert board.evidence
