@@ -10,9 +10,10 @@ from interview_agent_runtime.context import AgentContext
 from interview_agent_runtime.domain import InterviewStage
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolExecutor
+from interview_agent_runtime.memory import MemoryScope
 
 if TYPE_CHECKING:
-    from interview_agent_runtime.runtime.events import InMemoryEventBus
+    from interview_agent_runtime.runtime.events import InMemoryEventBus, TraceContext
 
 
 @dataclass
@@ -35,6 +36,8 @@ class AgentRunContext:
     tools: ToolExecutor
     agent_loop: object = None
     event_bus: Optional["InMemoryEventBus"] = None
+    trace: Optional["TraceContext"] = None
+    memory_scope: Optional[MemoryScope] = None
 
 
 class BaseInterviewAgent(ABC):

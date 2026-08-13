@@ -16,7 +16,12 @@ from interview_agent_runtime.context import AgentContextBuilder, ContextBudget
 from interview_agent_runtime.harness.config import HarnessConfig
 from interview_agent_runtime.harness.harness import InterviewHarness
 from interview_agent_runtime.memory import InMemorySessionMemory, RecentWindowMemoryCompressor
-from interview_agent_runtime.observability import NoopObserver
+from interview_agent_runtime.observability import (
+    CompositeObserver,
+    InMemoryTraceStore,
+    NoopObserver,
+    TraceObserver,
+)
 from interview_agent_runtime.providers import FakeLLMProvider, OpenAICompatibleLLMProvider
 from interview_agent_runtime.runtime.events import InMemoryEventBus
 from interview_agent_runtime.skills import SkillRegistry
@@ -93,6 +98,10 @@ def _assemble(
 ) -> InterviewHarness:
     skills_dir = config.skills_dir or _default_skills_dir()
     observer = NoopObserver()
+    trace_store = InMemoryTraceStore()
+    event_observer = CompositeObserver(
+        [observer, TraceObserver(trace_store)]
+    )
     return InterviewHarness(
         config=config,
         agent_registry=build_agent_registry(llm_provider=llm_provider),
@@ -101,8 +110,9 @@ def _assemble(
         tool_policy=ToolPolicy(),
         checkpoint_store=checkpoint_store,
         context_builder=AgentContextBuilder(ContextBudget()),
-        event_bus=InMemoryEventBus(observer=observer),
+        event_bus=InMemoryEventBus(observer=event_observer),
         observer=observer,
+        trace_store=trace_store,
         llm_provider=llm_provider,
         memory=InMemorySessionMemory(),
         memory_compressor=RecentWindowMemoryCompressor(),

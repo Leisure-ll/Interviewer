@@ -38,12 +38,21 @@ class RuntimeEventType(str, Enum):
     RUNTIME_ERROR = "RUNTIME_ERROR"
 
 
+@dataclass(frozen=True)
+class TraceContext:
+    trace_id: str
+    run_id: Optional[str] = None
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+
+
 @dataclass
 class RuntimeEvent:
     type: RuntimeEventType
     session_id: str
     message: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    trace: Optional[TraceContext] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -56,8 +65,14 @@ class InMemoryEventBus:
     def __init__(self, observer: Optional[Any] = None) -> None:
         self.events: list[RuntimeEvent] = []
         self.observer = observer
+        self._session_traces: dict[str, TraceContext] = {}
+
+    def bind_trace(self, session_id: str, trace: TraceContext) -> None:
+        self._session_traces[session_id] = trace
 
     async def emit(self, event: RuntimeEvent) -> None:
+        if event.trace is None and event.session_id in self._session_traces:
+            event.trace = self._session_traces[event.session_id]
         self.events.append(event)
         if self.observer is not None:
             await self.observer.on_event(event)

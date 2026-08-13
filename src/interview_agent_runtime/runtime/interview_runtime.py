@@ -10,9 +10,15 @@ from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
 from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
+from interview_agent_runtime.memory import MemoryScope
 from interview_agent_runtime.providers import LLMProvider
 from interview_agent_runtime.runtime.agent_loop import AgentLoop
-from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
+from interview_agent_runtime.runtime.events import (
+    InMemoryEventBus,
+    RuntimeEvent,
+    RuntimeEventType,
+    TraceContext,
+)
 from interview_agent_runtime.runtime.execution_policy import ExecutionPolicy, TaskExecutor
 from interview_agent_runtime.runtime.state_machine import InterviewStateMachine
 from interview_agent_runtime.domain import InterviewStage
@@ -73,6 +79,11 @@ class InterviewRuntime:
         session_allowed_tools: Optional[set[str]] = None,
     ) -> InterviewBlackboard:
         board = InterviewBlackboard(session_id=session_id or f"session_{uuid4().hex[:12]}")
+        board.runtime_metadata.trace_id = f"trace_{uuid4().hex[:16]}"
+        self.event_bus.bind_trace(
+            board.session_id,
+            TraceContext(trace_id=board.runtime_metadata.trace_id),
+        )
         board.session_inputs = {
             "resume": resume or {},
             "jd": jd or {},
@@ -100,6 +111,10 @@ class InterviewRuntime:
         duration_seconds: Optional[float] = None,
     ) -> RuntimeStepResult:
         context = await self.load_context(session_id)
+        self.event_bus.bind_trace(
+            session_id,
+            TraceContext(trace_id=context.runtime_metadata.trace_id),
+        )
         if context.current_stage != InterviewStage.LISTENING:
             raise RuntimeError(f"Session is not listening: {context.current_stage.value}")
         if context.current_question is None:
@@ -127,6 +142,10 @@ class InterviewRuntime:
 
     async def run_step(self, session_id: str) -> RuntimeStepResult:
         context = await self.load_context(session_id)
+        self.event_bus.bind_trace(
+            session_id,
+            TraceContext(trace_id=context.runtime_metadata.trace_id),
+        )
         previous = context.current_stage
         artifact: Optional[AgentArtifact] = None
 
@@ -168,6 +187,13 @@ class InterviewRuntime:
             session_allowed_tools=context.session_allowed_tools,
         )
         agent_context = self.context_builder.build(agent.name, context, execution_context)
+        run_id = f"run_{uuid4().hex[:12]}"
+        run_trace = TraceContext(
+            trace_id=context.runtime_metadata.trace_id,
+            run_id=run_id,
+            span_id=run_id,
+        )
+        self.event_bus.bind_trace(session_id, run_trace)
         await self.event_bus.emit(
             RuntimeEvent(
                 RuntimeEventType.AGENT_STARTED,
@@ -179,6 +205,7 @@ class InterviewRuntime:
                     "context_type": type(agent_context).__name__,
                     "authorized_tools": sorted(visible_tools),
                 },
+                trace=run_trace,
             )
         )
 
@@ -194,6 +221,8 @@ class InterviewRuntime:
             tools=self.tool_executor,
             agent_loop=self.agent_loop,
             event_bus=self.event_bus,
+            trace=run_trace,
+            memory_scope=MemoryScope(session_id, agent.name),
         )
         result = await self.executor.execute(lambda: agent.execute_run(run_context), policy)
         if not result.ok or result.value is None:
@@ -223,6 +252,10 @@ class InterviewRuntime:
                 session_id,
                 metadata={"from": previous.value, "to": context.current_stage.value, "artifact": artifact.kind},
             )
+        )
+        self.event_bus.bind_trace(
+            session_id,
+            TraceContext(trace_id=context.runtime_metadata.trace_id),
         )
         return RuntimeStepResult(session_id, previous, context.current_stage, artifact)
 

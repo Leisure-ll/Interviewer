@@ -5,10 +5,14 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from uuid import uuid4
 
+from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
+from interview_agent_runtime.memory import MemoryContextBuilder, MemoryScope
 from interview_agent_runtime.messages import AgentMessage
 from interview_agent_runtime.providers import LLMProvider, LLMRequest, LLMResponse
+from interview_agent_runtime.runtime.events import TraceContext
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
 from interview_agent_runtime.tools import ToolContext, ToolExecutor
 
@@ -28,7 +32,12 @@ class AgentRunRequest:
     token_budget: int = 2000
     timeout_seconds: float = 15.0
     memory_key: Optional[str] = None
+    memory_scope: Optional[MemoryScope] = None
+    blackboard: Optional[InterviewBlackboard] = None
     memory_limit: Optional[int] = None
+    include_interaction_memory: bool = True
+    include_domain_snapshot: bool = True
+    trace: Optional[TraceContext] = None
 
 
 @dataclass
@@ -59,25 +68,41 @@ class AgentLoop:
         self.memory = memory
         self.event_bus = event_bus
         self.compressor = compressor
+        self.memory_context_builder = MemoryContextBuilder(
+            memory,
+            compressor=compressor,
+        )
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
-        memory_key = request.memory_key or request.session_id
-        history = await self.memory.history(memory_key)
-        if self.compressor is not None and request.memory_limit is not None:
-            history = await self.compressor.compress(
-                history,
-                max_messages=request.memory_limit,
+        loop_trace = self._child_trace(request, kind="loop")
+        scope = request.memory_scope or MemoryScope(
+            request.session_id,
+            request.agent_name,
+        )
+        memory_key = request.memory_key or scope.key()
+        if request.include_interaction_memory:
+            memory_context = await self.memory_context_builder.build(
+                scope,
+                blackboard=request.blackboard if request.include_domain_snapshot else None,
+                max_recent_messages=request.memory_limit or 12,
             )
-        if history:
-            messages = history
         else:
-            messages = list(request.initial_messages)
-            await self.memory.extend(memory_key, messages)
+            memory_context = await self.memory_context_builder.build(
+                scope,
+                blackboard=request.blackboard if request.include_domain_snapshot else None,
+                max_recent_messages=0,
+            )
+            memory_context.summary = None
+            memory_context.recent_messages = []
+        messages = memory_context.to_messages()
+        messages.extend(request.initial_messages)
+        await self.memory.extend(memory_key, request.initial_messages)
 
         await self._emit(
             RuntimeEventType.AGENT_LOOP_STARTED,
             request,
             metadata={"max_rounds": request.max_rounds},
+            trace=loop_trace,
         )
 
         responses: list[LLMResponse] = []
@@ -99,6 +124,7 @@ class AgentLoop:
                         tool_calls,
                         "tool_budget_exceeded",
                         responses,
+                        trace=loop_trace,
                     )
 
                 llm_request = LLMRequest(
@@ -108,10 +134,12 @@ class AgentLoop:
                     max_tokens=request.token_budget,
                     timeout=request.timeout_seconds,
                 )
+                llm_span = self._child_trace(request, kind="llm", parent=loop_trace)
                 await self._emit(
                     RuntimeEventType.LLM_REQUESTED,
                     request,
                     metadata={"round": round_no, "tool_count": len(llm_request.tools)},
+                    trace=llm_span,
                 )
                 response = await asyncio.wait_for(
                     self.llm_provider.chat(llm_request),
@@ -130,6 +158,7 @@ class AgentLoop:
                         "finish_reason": response.finish_reason,
                         "total_tokens": response.total_tokens,
                     },
+                    trace=llm_span,
                 )
 
                 if total_tokens > request.token_budget:
@@ -141,6 +170,7 @@ class AgentLoop:
                         tool_calls,
                         "token_budget_exceeded",
                         responses,
+                        trace=loop_trace,
                     )
 
                 if not last_message.tool_calls:
@@ -154,6 +184,7 @@ class AgentLoop:
                             "stop_reason": "completed",
                             "duration_ms": (time.perf_counter() - started) * 1000,
                         },
+                        trace=loop_trace,
                     )
                     return AgentRunResult(
                         final_message=last_message,
@@ -175,12 +206,15 @@ class AgentLoop:
                             tool_calls,
                             "tool_budget_exceeded",
                             responses,
+                            trace=loop_trace,
                         )
                     tool_calls += 1
+                    tool_span = self._child_trace(request, kind="tool", parent=loop_trace)
                     await self._emit(
                         RuntimeEventType.TOOL_CALLED,
                         request,
                         metadata={"round": round_no, "tool": tool_call.name},
+                        trace=tool_span,
                     )
                     result = await request.tool_executor.execute(
                         tool_call,
@@ -212,6 +246,7 @@ class AgentLoop:
                             "ok": result.ok,
                             "duration_ms": result.duration_ms,
                         },
+                        trace=tool_span,
                     )
 
             return await self._stopped(
@@ -222,6 +257,7 @@ class AgentLoop:
                 tool_calls,
                 "max_rounds",
                 responses,
+                trace=loop_trace,
             )
         except asyncio.TimeoutError:
             return await self._stopped(
@@ -232,6 +268,7 @@ class AgentLoop:
                 tool_calls,
                 "timeout",
                 responses,
+                trace=loop_trace,
             )
         except Exception as exc:
             return await self._stopped(
@@ -243,6 +280,7 @@ class AgentLoop:
                 "provider_error",
                 responses,
                 error_type=type(exc).__name__,
+                trace=loop_trace,
             )
 
     async def _stopped(
@@ -255,6 +293,7 @@ class AgentLoop:
         reason: str,
         responses: list[LLMResponse],
         error_type: Optional[str] = None,
+        trace: Optional[TraceContext] = None,
     ) -> AgentRunResult:
         await self._emit(
             RuntimeEventType.AGENT_LOOP_STOPPED,
@@ -265,6 +304,7 @@ class AgentLoop:
                 "stop_reason": reason,
                 **({"error_type": error_type} if error_type else {}),
             },
+            trace=trace,
         )
         return AgentRunResult(
             final_message=last_message,
@@ -281,6 +321,7 @@ class AgentLoop:
         event_type: RuntimeEventType,
         request: AgentRunRequest,
         metadata: Optional[dict[str, Any]] = None,
+        trace: Optional[TraceContext] = None,
     ) -> None:
         if self.event_bus is None:
             return
@@ -293,7 +334,25 @@ class AgentLoop:
                     "skill": request.skill_name,
                     **(metadata or {}),
                 },
+                trace=trace or request.trace,
             )
+        )
+
+    def _child_trace(
+        self,
+        request: AgentRunRequest,
+        *,
+        kind: str,
+        parent: Optional[TraceContext] = None,
+    ) -> Optional[TraceContext]:
+        base = parent or request.trace
+        if base is None:
+            return None
+        return TraceContext(
+            trace_id=base.trace_id,
+            run_id=base.run_id,
+            span_id=f"{kind}_{uuid4().hex[:12]}",
+            parent_span_id=base.span_id,
         )
 
 

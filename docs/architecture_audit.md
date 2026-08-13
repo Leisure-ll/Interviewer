@@ -536,3 +536,122 @@ ProfileAgent
 
 如果模型响应不可用或没有产出完整画像，ProfileAgent 发出
 `AGENT_FALLBACK_USED`，再由 Runtime 已授权的 ToolExecutor 执行本地 fallback。
+
+## 22. Domain-aware Memory / Trace / MCP 收敛
+
+本轮继续保持 6 个固定 Specialist Agent 和 `Artifact -> Blackboard -> Runtime`
+协作方式，只增强 Runtime 基础设施。
+
+### Domain-aware Memory
+
+当前 Memory 明确分三层：
+
+```text
+Interaction Memory
+  = SessionMemory 中的 system/user/assistant/tool AgentMessage
+
+Domain Working Memory
+  = InterviewBlackboard 中的 Plan/Evidence/Capability/Budget/Coverage
+
+Knowledge Memory
+  = 通过 Tool Runtime 访问的 Resume/JD/QuestionBank/Rubric/RAG
+```
+
+新增：
+
+- `MemoryScope(session_id, agent_name)`
+- `InterviewMemorySnapshot`
+- `MemoryContext`
+- `MemoryContextBuilder`
+- `DeterministicMemorySummarizer`
+
+`AgentLoop` 现在在真实执行路径中合并：
+
+```text
+historical message summary
++ recent AgentMessage history
++ InterviewMemorySnapshot
++ current task messages
+```
+
+当前任务上下文不会因为已有历史 Memory 而丢失。ProfileAgent 仍然通过
+AgentLoop 运行；其他 Agent 继续走确定性领域执行路径。
+
+`CapabilityContextCompressor` 已复用 `InterviewMemorySnapshot`，压缩目标是能力状态，
+不是普通聊天摘要。
+
+### Run Trace
+
+新增：
+
+- `TraceContext`
+- `RunTrace`
+- `TraceSpan`
+- `TraceStore`
+- `InMemoryTraceStore`
+- `JsonFileTraceStore`
+- `TraceObserver`
+- `TraceSanitizer`
+
+Trace 通过已有 Observer 边界接入：
+
+```text
+Runtime / AgentLoop
+  -> RuntimeEvent(trace=TraceContext)
+  -> EventBus
+  -> CompositeObserver
+  -> TraceObserver
+  -> TraceStore
+```
+
+Trace 层级表达为：
+
+```text
+Session trace_id
+  -> Agent run_id
+     -> AgentLoop span
+        -> LLM span
+        -> Tool span
+```
+
+`TraceSanitizer` 默认不保存完整 prompt、完整简历、完整回答、完整 messages 或完整
+tool result。TraceStore 失败不会影响 CheckpointStore，Checkpoint 仍然只负责恢复快照。
+
+### MCP Tool Adapter
+
+新增：
+
+- `MCPClient`
+- `MCPToolDefinition`
+- `MCPToolAdapter`
+- `FakeMCPClient`
+
+MCP 工具不会绕过 Runtime 的工具治理：
+
+```text
+MCP Server
+  -> MCPClient
+  -> MCPToolAdapter
+  -> ToolSpec(source="mcp")
+  -> ToolRegistry
+  -> ToolPolicy
+  -> visible tools
+  -> AgentLoop
+```
+
+默认命名空间为 `mcp.*`，例如 `mcp.knowledge.search`。即使模型手动构造未授权
+MCP ToolCall，`ToolExecutor` 仍返回失败的 `ToolResult`，不会执行 handler。
+
+### 新增测试
+
+- `tests/test_memory_scope.py`
+- `tests/test_memory_context.py`
+- `tests/test_interview_memory_snapshot.py`
+- `tests/test_trace_store.py`
+- `tests/test_trace_observer.py`
+- `tests/test_trace_correlation.py`
+- `tests/test_trace_checkpoint_boundary.py`
+- `tests/test_trace_sanitizer.py`
+- `tests/test_mcp_tool_adapter.py`
+- `tests/test_mcp_tool_policy.py`
+- `tests/test_mcp_tool_calling.py`

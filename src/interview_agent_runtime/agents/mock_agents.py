@@ -79,7 +79,11 @@ class ProfileAgent(BaseInterviewAgent):
                 max_tool_calls=4,
                 token_budget=run_context.token_budget,
                 timeout_seconds=run_context.timeout_seconds,
-                memory_key=f"{run_context.session_id}:{self.name}",
+                memory_scope=run_context.memory_scope,
+                blackboard=run_context.blackboard,
+                include_interaction_memory=False,
+                include_domain_snapshot=False,
+                trace=run_context.trace,
             )
         )
         resume, jd = self._tool_inputs(loop_result.messages)

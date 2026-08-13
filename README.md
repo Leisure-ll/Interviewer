@@ -129,6 +129,42 @@ The context budget limits recent questions, recent answers, evidence items, and 
 LLM context size. Capability-oriented compression keeps verified, weak, uncertain,
 coverage, evidence, and unresolved gaps rather than a generic chat summary.
 
+## Memory Architecture
+
+Memory is deliberately split into three sources:
+
+```text
+Interaction Memory  = AgentMessage history in SessionMemory
+Domain Working Memory = InterviewBlackboard, Evidence, CapabilityProfile, Plan, budgets
+Knowledge Memory = resume, JD, question bank, rubric, RAG access through Tools
+```
+
+`MemoryScope(session_id, agent_name)` gives each Specialist Agent its own interaction
+history. Agents share interview facts through `Artifact -> Blackboard`, not through shared
+message history.
+
+`MemoryContextBuilder` builds the K-style summary plus recent window:
+
+```text
+old AgentMessage history -> deterministic summary
+recent AgentMessage history -> recent_messages
+InterviewBlackboard -> InterviewMemorySnapshot
+```
+
+`InterviewMemorySnapshot` stores capability-oriented domain memory:
+
+- verified, weak, and uncertain skills
+- dimension scores and coverage
+- key evidence
+- unresolved gaps
+- recent question ids
+- current dimension
+
+`MemoryCompressor` still only controls message history. `CapabilityContextCompressor`
+now produces an `InterviewMemorySnapshot`-backed domain summary. These two compressors
+remain separate because interaction history and interview capability state have different
+sources of truth.
+
 ## Adaptive Interview
 
 `PlannerAgent` builds an interview plan from candidate profile and position profile.
@@ -250,16 +286,55 @@ LLM, ASR, TTS, and digital-human integrations should be connected as adapters.
 value/error, and duration. Unauthorized ToolCalls are rejected even if proposed by
 the model.
 
+MCP tools are adapted into the same runtime model instead of creating a second tool
+system:
+
+```text
+MCPClient -> MCPToolAdapter -> ToolSpec(source="mcp") -> ToolRegistry -> ToolPolicy -> AgentLoop
+```
+
+`FakeMCPClient` is available for tests. MCP tools are namespaced by default, for example
+`mcp.knowledge.search`, and still require the normal three-way authorization intersection
+before the model can see or execute them.
+
+## Trace / Observer
+
+Runtime events now carry a typed `TraceContext` with `trace_id`, `run_id`, `span_id`,
+and `parent_span_id`. The trace hierarchy is intentionally small:
+
+```text
+Interview Session Trace
+  -> Agent Run
+     -> AgentLoop
+        -> LLM Call
+        -> Tool Call
+```
+
+`TraceObserver` listens to `RuntimeEvent` through the existing observer boundary and writes
+to a `TraceStore`. Implementations currently include `InMemoryTraceStore` and
+`JsonFileTraceStore`. `TraceSanitizer` keeps sensitive fields such as prompts, raw resume,
+full answers, messages, and tool results out of trace metadata by default.
+
+Checkpoint and trace are separate:
+
+```text
+CheckpointStore = recovery snapshot
+TraceStore = observability timeline
+```
+
+Trace failures are swallowed inside `TraceObserver` so observability backends do not break
+blackboard checkpointing or interview execution.
+
 ## Architecture Sources
 
 The implementation is inspired by, but does not copy, the two reference architectures:
 
 - Kugelblitz-inspired: AgentLoop, visible tool whitelist, Skill/Tool runtime,
-  execution limits, SessionMemory, Checkpoint, and Observer.
+  execution limits, SessionMemory, memory context, MCP tool adapter, Checkpoint, and Observer.
 - MindBridge-inspired: typed AgentMessage for internal LLM communication,
   Specialist Agent, Artifact, Blackboard, and structured collaboration.
 - Interviewer-owned domain: Interview FSM, InterviewPlan, Evidence, CapabilityProfile,
-  adaptive follow-up, and evidence-driven reporting.
+  InterviewMemorySnapshot, adaptive follow-up, and evidence-driven reporting.
 
 `AgentMessage` is internal to one AgentLoop. Specialist Agents still collaborate only
 through `Artifact -> Blackboard -> Context Projection`; messages are not an Agent-to-Agent

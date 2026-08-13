@@ -8,8 +8,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from interview_agent_runtime.application import InterviewApplicationService
+from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.harness import InterviewHarness
-from interview_agent_runtime.runtime import InterviewStage
+from interview_agent_runtime.memory import InterviewMemorySnapshot, InMemorySessionMemory
+from interview_agent_runtime.messages import AgentMessage
+from interview_agent_runtime.providers import FakeLLMProvider
+from interview_agent_runtime.runtime import AgentLoop, AgentRunRequest, InterviewStage
+from interview_agent_runtime.tools import (
+    FakeMCPClient,
+    MCPToolAdapter,
+    MCPToolDefinition,
+    ToolContext,
+    ToolExecutor,
+    ToolPolicy,
+    ToolRegistry,
+)
 
 
 RESUME = {
@@ -115,6 +128,9 @@ async def main() -> None:
     print(f"Uncertain: {', '.join(report.insufficient_evidence_areas) or '-'}")
     print(f"Evidence Count: {len(report.evidence)}")
     print(f"Recommendation: {report.hiring_recommendation}")
+    print_memory_snapshot(board)
+    await print_trace_summary(harness, board.runtime_metadata.trace_id)
+    await print_mcp_tool_calling_example()
 
 
 def print_runtime_events(service: InterviewApplicationService, start: int) -> None:
@@ -202,6 +218,81 @@ def print_runtime_events(service: InterviewApplicationService, start: int) -> No
             print(f"[EVENT] session started {event.session_id}")
         elif event.type.value == "QUESTION_ASKED":
             print("[EVENT] question asked; checkpoint saved")
+
+
+def print_memory_snapshot(board) -> None:
+    snapshot = InterviewMemorySnapshot.from_blackboard(board)
+    print("\n=== Memory Context Example ===")
+    print("Interaction Memory: ProfileAgent recent assistant/tool messages in SessionMemory")
+    print("Domain Snapshot:")
+    print(f"current_dimension={snapshot.current_dimension or '-'}")
+    print(f"verified_skills={snapshot.verified_skills}")
+    print(f"weak_skills={snapshot.weak_skills}")
+    print(f"uncertain_skills={snapshot.uncertain_skills}")
+    print(f"dimension_coverage={snapshot.dimension_coverage}")
+    print(f"unresolved_gaps={snapshot.unresolved_gaps[:3]}")
+
+
+async def print_trace_summary(harness: InterviewHarness, trace_id: str) -> None:
+    print("\n=== Trace Example ===")
+    print(trace_id)
+    trace_store = getattr(harness, "trace_store", None)
+    trace = await trace_store.load(trace_id) if trace_store is not None else None
+    if trace is None:
+        print("trace unavailable")
+        return
+    for span in trace.spans[:8]:
+        print(
+            f"- {span.kind} {span.span_id} parent={span.parent_span_id or '-'} "
+            f"name={span.name} status={span.status}"
+        )
+
+
+async def print_mcp_tool_calling_example() -> None:
+    print("\n=== MCP Tool Calling Example ===")
+    client = FakeMCPClient(
+        tools=[MCPToolDefinition("knowledge.search", "Search knowledge")],
+        responses={"knowledge.search": {"items": ["Cache Aside"]}},
+    )
+    registry = ToolRegistry()
+    await MCPToolAdapter(client).load_tools(registry)
+    provider = FakeLLMProvider(
+        responses=[
+            {
+                "tool_calls": [
+                    {
+                        "id": "mcp_demo_call",
+                        "name": "mcp.knowledge.search",
+                        "arguments": {"query": "cache"},
+                    }
+                ]
+            },
+            {"content": '{"done": true}'},
+        ]
+    )
+    result = await AgentLoop(provider, InMemorySessionMemory()).run(
+        AgentRunRequest(
+            session_id="demo-mcp",
+            agent_name="QuestionAgent",
+            skill_name="question-generation",
+            initial_messages=[AgentMessage.system("system"), AgentMessage.user("search knowledge")],
+            visible_tools={"mcp.knowledge.search"},
+            tool_executor=ToolExecutor(
+                registry,
+                ToolPolicy({"QuestionAgent": {"mcp.knowledge.search"}}),
+            ),
+            tool_context=ToolContext(
+                "demo-mcp",
+                "QuestionAgent",
+                "question-generation",
+                InterviewBlackboard("demo-mcp"),
+            ),
+        )
+    )
+    print("QuestionAgent / AgentLoop")
+    print("assistant -> mcp.knowledge.search")
+    print(f"MCPToolAdapter -> FakeMCPClient calls={client.calls}")
+    print(f"stop_reason={result.stop_reason}")
 
 
 if __name__ == "__main__":

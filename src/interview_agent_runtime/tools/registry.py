@@ -33,6 +33,7 @@ class ToolSpec:
     timeout_seconds: Optional[float] = None
     side_effect: bool = False
     idempotent: bool = True
+    source: str = "local"
 
     def to_provider_schema(self) -> dict[str, Any]:
         return {
