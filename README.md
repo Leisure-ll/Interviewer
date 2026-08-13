@@ -100,6 +100,19 @@ Retryable failures remain eligible for a later retry, while repeated successful 
 can be rejected by the duplicate guard. A single response that requests more tools than
 the remaining tool budget is rejected as a batch and receives explicit tool messages.
 
+When one assistant response contains multiple `ToolCall` values, concurrency is governed
+by `ToolSpec.parallel_safe` and runtime policy, not by the model. Independent read-only
+calls may run in a parallel-safe batch; side-effect calls and calls sharing the same
+resource identity stay serialized. Duplicate logical invocation identities are rejected
+before handlers run. `AgentRunResult` records parallel batches, maximum parallelism,
+serialized calls, and resource conflicts.
+
+Successful side-effect tools are recorded in recoverable Blackboard/Checkpoint state
+before the AgentLoop continues. On resume, a matching successful side-effect invocation
+returns the recorded result instead of calling the handler again. This is best-effort,
+idempotency-based duplicate protection, not a distributed exactly-once guarantee. Trace
+remains observability only and is never used for recovery.
+
 ### Human Review Gate
 
 After `ReportArtifact` is published, the deterministic `HumanReviewPolicy` evaluates
@@ -165,6 +178,12 @@ The context budget limits recent questions, recent answers, evidence items, and 
 LLM context size. Capability-oriented compression keeps verified, weak, uncertain,
 coverage, evidence, and unresolved gaps rather than a generic chat summary.
 
+Context is a projection of Blackboard + Memory + current task, not a full transcript
+dump. Current task inputs, current question/answer/rubric, runtime constraints, and
+Blackboard domain facts take precedence over old interaction history and verbose tool
+output. Large tool results are projected to a bounded preview with size/hash metadata
+before entering the next model request.
+
 ## Memory Architecture
 
 Memory is deliberately split into three sources:
@@ -200,6 +219,29 @@ InterviewBlackboard -> InterviewMemorySnapshot
 now produces an `InterviewMemorySnapshot`-backed domain summary. These two compressors
 remain separate because interaction history and interview capability state have different
 sources of truth.
+
+Source-of-truth boundaries:
+
+```text
+SessionMemory = model cognitive interaction context
+InterviewBlackboard = current business facts and domain state
+Checkpoint = recoverable Runtime snapshot, including durable tool state
+Trace = execution timeline for observability only
+Knowledge / RAG = external knowledge source accessed through Tools
+```
+
+When historical interaction memory conflicts with current domain facts, the latest
+Blackboard projection wins. Memory supports reasoning; it does not overwrite business
+state. Checkpoint contains the Blackboard plus runtime recovery state, but it is not the
+Blackboard itself.
+
+### Runtime Outcome Semantics
+
+`AgentLoop` reports why one model/tool loop stopped, such as `completed`, `timeout`,
+`tool_budget_exceeded`, or `repeated_tool_call`. `RuntimeOutcome` reports the enclosing
+runtime step as `completed`, `failed`, or `paused`. `InterviewStage` remains the business
+FSM state. Therefore `WAITING_HUMAN_REVIEW` is a paused runtime outcome, not an AgentLoop
+failure.
 
 ## Adaptive Interview
 

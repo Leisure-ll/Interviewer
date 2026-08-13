@@ -22,4 +22,10 @@ class StopReason(str, Enum):
     REPEATED_TOOL_CALL = "repeated_tool_call"
 
 
-__all__ = ["ExecutionStrategy", "StopReason"]
+class RuntimeOutcome(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+
+__all__ = ["ExecutionStrategy", "RuntimeOutcome", "StopReason"]

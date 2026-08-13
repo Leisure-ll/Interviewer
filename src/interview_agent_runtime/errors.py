@@ -22,6 +22,10 @@ class ToolTimeoutError(ToolError):
     pass
 
 
+class ToolDurabilityError(ToolError):
+    pass
+
+
 class AgentLoopError(AgentRuntimeError):
     pass
 

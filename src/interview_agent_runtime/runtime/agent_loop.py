@@ -15,7 +15,13 @@ from interview_agent_runtime.messages import AgentMessage
 from interview_agent_runtime.providers import LLMProvider, LLMRequest, LLMResponse
 from interview_agent_runtime.runtime.events import TraceContext
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
-from interview_agent_runtime.tools import ToolContext, ToolExecutor, ToolGovernanceState
+from interview_agent_runtime.tools import (
+    DurableToolExecutionRecord,
+    ToolContext,
+    ToolExecutor,
+    ToolGovernanceState,
+    ToolResultContextProjector,
+)
 
 
 @dataclass
@@ -41,6 +47,10 @@ class AgentRunRequest:
     trace: Optional[TraceContext] = None
     execution_strategy: ExecutionStrategy = ExecutionStrategy.REACT
     max_duplicate_calls: int = 1
+    durable_records: Optional[dict[str, DurableToolExecutionRecord]] = None
+    persist_durable_tool_record: Optional[Any] = None
+    run_id: Optional[str] = None
+    context_budget_tokens: Optional[int] = None
 
 
 @dataclass
@@ -60,6 +70,10 @@ class AgentRunResult:
     total_tokens: int = 0
     requested_tool_calls: int = 0
     executed_tool_calls: int = 0
+    parallel_tool_batches: int = 0
+    max_parallelism: int = 1
+    sequential_tool_calls: int = 0
+    resource_conflicts: int = 0
 
 
 class AgentLoop:
@@ -100,7 +114,11 @@ class AgentLoop:
             )
             memory_context.summary = None
             memory_context.recent_messages = []
-        messages = memory_context.to_messages()
+        messages = memory_context.to_messages(
+            max_chars=request.context_budget_tokens * 4
+            if request.context_budget_tokens
+            else None
+        )
         messages.extend(request.initial_messages)
         await self.memory.extend(memory_key, request.initial_messages)
 
@@ -124,6 +142,11 @@ class AgentLoop:
         last_message = AgentMessage.assistant("")
         started = time.perf_counter()
         governance = ToolGovernanceState(request.max_duplicate_calls)
+        projector = ToolResultContextProjector()
+        parallel_tool_batches = 0
+        max_parallelism = 1
+        sequential_tool_calls = 0
+        resource_conflicts = 0
 
         try:
             for round_no in range(1, request.max_rounds + 1):
@@ -241,25 +264,48 @@ class AgentLoop:
                         trace=loop_trace,
                     )
 
+                batch_id = f"batch_{uuid4().hex[:12]}"
+                tool_spans: list[Optional[TraceContext]] = []
                 for tool_call in last_message.tool_calls:
-                    tool_calls += 1
                     tool_span = self._child_trace(request, kind="tool", parent=loop_trace)
+                    tool_spans.append(tool_span)
                     await self._emit(
                         RuntimeEventType.TOOL_CALLED,
                         request,
-                        metadata={"round": round_no, "tool": tool_call.name},
+                        metadata={
+                            "round": round_no,
+                            "tool": tool_call.name,
+                            "batch_id": batch_id,
+                            "batch_size": len(last_message.tool_calls),
+                        },
                         trace=tool_span,
                     )
-                    result = await request.tool_executor.execute(
-                        tool_call,
-                        request.tool_context,
-                        request.visible_tools,
-                        governance=governance,
-                        round_no=round_no,
-                    )
-                    executed_tool_calls += 1
+                batch = await request.tool_executor.execute_batch(
+                    last_message.tool_calls,
+                    request.tool_context,
+                    request.visible_tools,
+                    governance=governance,
+                    round_no=round_no,
+                    durable_records=request.durable_records,
+                    persist_durable_record=request.persist_durable_tool_record,
+                    run_id=request.run_id,
+                )
+                tool_calls += len(last_message.tool_calls)
+                executed_tool_calls += len(batch.results)
+                parallel_tool_batches += batch.parallel_tool_batches
+                max_parallelism = max(max_parallelism, batch.max_parallelism)
+                sequential_tool_calls += batch.sequential_tool_calls
+                resource_conflicts += batch.resource_conflicts
+                for tool_call, result, tool_span in zip(
+                    last_message.tool_calls,
+                    batch.results,
+                    tool_spans,
+                ):
                     if result.ok:
-                        content = json.dumps(result.value, ensure_ascii=False)
+                        content = json.dumps(
+                            projector.project(result.value),
+                            ensure_ascii=False,
+                        )
                         event_type = RuntimeEventType.TOOL_SUCCEEDED
                     else:
                         content = json.dumps(
@@ -285,6 +331,10 @@ class AgentLoop:
                             "status": result.status,
                             "cache_hit": result.cache_hit,
                             "duplicate": result.duplicate,
+                            "batch_id": batch_id,
+                            "batch_size": len(last_message.tool_calls),
+                            "parallel": result.execution_mode == "parallel_safe",
+                            "resource_key": result.resource_key,
                         },
                         trace=tool_span,
                     )
@@ -303,6 +353,10 @@ class AgentLoop:
                             total_tokens=total_tokens,
                             started=started,
                             trace=loop_trace,
+                            parallel_tool_batches=parallel_tool_batches,
+                            max_parallelism=max_parallelism,
+                            sequential_tool_calls=sequential_tool_calls,
+                            resource_conflicts=resource_conflicts,
                         )
 
             return await self._stopped(
@@ -319,6 +373,10 @@ class AgentLoop:
                 total_tokens=total_tokens,
                 started=started,
                 trace=loop_trace,
+                parallel_tool_batches=parallel_tool_batches,
+                max_parallelism=max_parallelism,
+                sequential_tool_calls=sequential_tool_calls,
+                resource_conflicts=resource_conflicts,
             )
         except asyncio.TimeoutError:
             return await self._stopped(
@@ -368,6 +426,10 @@ class AgentLoop:
         total_tokens: int,
         started: float,
         trace: Optional[TraceContext],
+        parallel_tool_batches: int = 0,
+        max_parallelism: int = 1,
+        sequential_tool_calls: int = 0,
+        resource_conflicts: int = 0,
     ) -> AgentRunResult:
         duration_ms = (time.perf_counter() - started) * 1000
         await self._emit(
@@ -382,6 +444,10 @@ class AgentLoop:
                 "unique_tool_calls": governance.unique_tool_calls,
                 "cache_hits": governance.cache_hits,
                 "duplicate_calls": governance.duplicate_calls,
+                "parallel_tool_batches": parallel_tool_batches,
+                "max_parallelism": max_parallelism,
+                "sequential_tool_calls": sequential_tool_calls,
+                "resource_conflicts": resource_conflicts,
             },
             trace=trace,
         )
@@ -401,6 +467,10 @@ class AgentLoop:
             total_tokens=total_tokens,
             requested_tool_calls=requested_tool_calls,
             executed_tool_calls=executed_tool_calls,
+            parallel_tool_batches=parallel_tool_batches,
+            max_parallelism=max_parallelism,
+            sequential_tool_calls=sequential_tool_calls,
+            resource_conflicts=resource_conflicts,
         )
 
     async def _stopped(
@@ -419,6 +489,10 @@ class AgentLoop:
         total_tokens: int = 0,
         started: Optional[float] = None,
         trace: Optional[TraceContext] = None,
+        parallel_tool_batches: int = 0,
+        max_parallelism: int = 1,
+        sequential_tool_calls: int = 0,
+        resource_conflicts: int = 0,
     ) -> AgentRunResult:
         duration_ms = (time.perf_counter() - started) * 1000 if started else 0.0
         await self._emit(
@@ -432,6 +506,10 @@ class AgentLoop:
                 "unique_tool_calls": governance.unique_tool_calls if governance else 0,
                 "cache_hits": governance.cache_hits if governance else 0,
                 "duplicate_calls": governance.duplicate_calls if governance else 0,
+                "parallel_tool_batches": parallel_tool_batches,
+                "max_parallelism": max_parallelism,
+                "sequential_tool_calls": sequential_tool_calls,
+                "resource_conflicts": resource_conflicts,
                 "duration_ms": duration_ms,
                 **({"error_type": error_type} if error_type else {}),
             },
@@ -453,6 +531,10 @@ class AgentLoop:
             total_tokens=total_tokens,
             requested_tool_calls=requested_tool_calls,
             executed_tool_calls=executed_tool_calls,
+            parallel_tool_batches=parallel_tool_batches,
+            max_parallelism=max_parallelism,
+            sequential_tool_calls=sequential_tool_calls,
+            resource_conflicts=resource_conflicts,
         )
 
     async def _append_batch_rejection(

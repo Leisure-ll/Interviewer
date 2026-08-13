@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from interview_agent_runtime.artifacts import AgentArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
@@ -43,6 +43,8 @@ class AgentRunContext:
     max_iterations: int = 4
     max_tool_calls: int = 8
     max_duplicate_calls: int = 1
+    persist_durable_tool_record: Optional[Callable[[object], Awaitable[None]]] = None
+    context_budget_tokens: Optional[int] = None
 
 
 class BaseInterviewAgent(ABC):

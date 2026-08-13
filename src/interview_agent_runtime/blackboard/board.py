@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional, Set
+from typing import TYPE_CHECKING, Any, Optional, Set
 
 from interview_agent_runtime.artifacts import (
     AgentArtifact,
@@ -17,6 +17,8 @@ from interview_agent_runtime.artifacts import (
 )
 from interview_agent_runtime.domain import CapabilityProfile, CandidateProfile, InterviewPlan, InterviewStage, PositionProfile
 from interview_agent_runtime.planning import InterviewPlanPolicy
+if TYPE_CHECKING:
+    from interview_agent_runtime.tools.registry import DurableToolExecutionRecord
 
 
 @dataclass
@@ -59,6 +61,7 @@ class InterviewBlackboard:
     review_reasons: list[str] = field(default_factory=list)
     review_reviewer: str = ""
     review_decision_reason: str = ""
+    durable_tool_records: dict[str, "DurableToolExecutionRecord"] = field(default_factory=dict)
     runtime_metadata: RuntimeMetadata = field(default_factory=RuntimeMetadata)
     plan_policy: InterviewPlanPolicy = field(default_factory=InterviewPlanPolicy, repr=False, compare=False)
 

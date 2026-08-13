@@ -117,19 +117,32 @@ class MemoryContext:
     recent_messages: list[AgentMessage] = field(default_factory=list)
     domain_snapshot: Optional[InterviewMemorySnapshot] = None
 
-    def to_messages(self) -> list[AgentMessage]:
-        messages: list[AgentMessage] = []
-        if self.summary is not None:
-            messages.append(self.summary)
+    def to_messages(self, max_chars: Optional[int] = None) -> list[AgentMessage]:
+        domain_messages: list[AgentMessage] = []
         if self.domain_snapshot is not None and not self.domain_snapshot.is_empty():
-            messages.append(
+            domain_messages.append(
                 AgentMessage.system(
                     "Interview capability snapshot:\n"
                     + json.dumps(self.domain_snapshot.to_dict(), ensure_ascii=False)
                 )
             )
-        messages.extend(self.recent_messages)
-        return messages
+        history_messages = ([self.summary] if self.summary is not None else []) + list(
+            self.recent_messages
+        )
+        if max_chars is None:
+            return domain_messages + history_messages
+
+        # Domain facts outrank interaction history. Trim old history first and
+        # leave the current invocation messages to the caller.
+        used = sum(len(message.content or "") for message in domain_messages)
+        kept: list[AgentMessage] = []
+        for message in reversed(history_messages):
+            size = len(message.content or "")
+            if kept and used + size > max_chars:
+                continue
+            kept.append(message)
+            used += size
+        return domain_messages + list(reversed(kept))
 
     @property
     def has_history(self) -> bool:

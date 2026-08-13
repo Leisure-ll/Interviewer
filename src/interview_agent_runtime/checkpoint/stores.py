@@ -27,6 +27,7 @@ from interview_agent_runtime.domain import (
     PositionProfile,
     ProjectExperience,
 )
+from interview_agent_runtime.tools import DurableToolExecutionRecord, ToolInvocationKey, ToolResult
 
 
 class CheckpointStore(Protocol):
@@ -94,8 +95,51 @@ def _blackboard_from_json(data: dict[str, Any]) -> InterviewBlackboard:
     board.review_reasons = list(data.get("review_reasons", []))
     board.review_reviewer = data.get("review_reviewer", "")
     board.review_decision_reason = data.get("review_decision_reason", "")
+    board.durable_tool_records = {
+        key: _durable_tool_record(item)
+        for key, item in data.get("durable_tool_records", {}).items()
+    }
     board.runtime_metadata = _runtime_metadata(data.get("runtime_metadata", {}))
     return board
+
+
+def _durable_tool_record(data: dict[str, Any]) -> DurableToolExecutionRecord:
+    invocation = data.get("invocation_key", {})
+    key = ToolInvocationKey(
+        tool_name=invocation.get("tool_name", data.get("tool_name", "")),
+        normalized_arguments=invocation.get("normalized_arguments", "{}"),
+        resource_version=invocation.get("resource_version"),
+    )
+    result_data = data.get("result")
+    result = None
+    if result_data:
+        result = ToolResult(
+            tool_call_id=result_data.get("tool_call_id", data.get("tool_call_id", "")),
+            tool_name=result_data.get("tool_name", data.get("tool_name", "")),
+            ok=bool(result_data.get("ok", False)),
+            value=result_data.get("value"),
+            error=result_data.get("error"),
+            duration_ms=float(result_data.get("duration_ms", 0.0)),
+            status=result_data.get("status", "success"),
+            cache_hit=bool(result_data.get("cache_hit", False)),
+            duplicate=bool(result_data.get("duplicate", False)),
+            retryable=bool(result_data.get("retryable", False)),
+            execution_mode=result_data.get("execution_mode", "sequential"),
+            resource_key=result_data.get("resource_key"),
+        )
+    completed_at = data.get("completed_at")
+    return DurableToolExecutionRecord(
+        invocation_key=key,
+        tool_name=data.get("tool_name", key.tool_name),
+        status=data.get("status", "error"),
+        result=result,
+        result_reference=data.get("result_reference", ""),
+        side_effect=bool(data.get("side_effect", False)),
+        idempotency_key=data.get("idempotency_key"),
+        completed_at=datetime.fromisoformat(completed_at) if completed_at else None,
+        run_id=data.get("run_id"),
+        tool_call_id=data.get("tool_call_id", ""),
+    )
 
 
 def _candidate_artifact(data: Optional[dict[str, Any]]) -> Optional[CandidateProfileArtifact]:

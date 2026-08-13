@@ -9,7 +9,7 @@ from interview_agent_runtime.artifacts import AgentArtifact, AnswerArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
-from interview_agent_runtime.execution import ExecutionStrategy
+from interview_agent_runtime.execution import ExecutionStrategy, RuntimeOutcome, StopReason
 from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
 from interview_agent_runtime.memory import MemoryScope
 from interview_agent_runtime.providers import LLMProvider
@@ -34,6 +34,8 @@ class RuntimeStepResult:
     previous_stage: InterviewStage
     current_stage: InterviewStage
     artifact: Optional[AgentArtifact]
+    outcome: RuntimeOutcome = RuntimeOutcome.COMPLETED
+    stop_reason: Optional[str] = None
 
 
 class InterviewRuntime:
@@ -245,6 +247,11 @@ class InterviewRuntime:
             max_iterations=skill.max_iterations,
             max_tool_calls=skill.max_tool_calls,
             max_duplicate_calls=skill.max_duplicate_calls,
+            persist_durable_tool_record=lambda record: self._persist_durable_tool_record(
+                context,
+                record,
+            ),
+            context_budget_tokens=self.context_builder.budget.max_context_tokens,
         )
         result = await self.executor.execute(lambda: agent.execute_run(run_context), policy)
         if not result.ok or result.value is None:
@@ -252,7 +259,13 @@ class InterviewRuntime:
             context.current_stage = InterviewStage.FAILED
             await self.checkpoint_store.save(context)
             await self.event_bus.emit(RuntimeEvent(RuntimeEventType.RUNTIME_ERROR, session_id, message=str(result.error)))
-            return RuntimeStepResult(session_id, previous, context.current_stage, None)
+            return RuntimeStepResult(
+                session_id,
+                previous,
+                context.current_stage,
+                None,
+                outcome=RuntimeOutcome.FAILED,
+            )
 
         artifact = result.value
         self._validate_artifact_schema(artifact, skill.output_schema)
@@ -314,7 +327,30 @@ class InterviewRuntime:
             session_id,
             TraceContext(trace_id=context.runtime_metadata.trace_id),
         )
-        return RuntimeStepResult(session_id, previous, context.current_stage, artifact)
+        outcome = (
+            RuntimeOutcome.PAUSED
+            if context.current_stage == InterviewStage.WAITING_HUMAN_REVIEW
+            else RuntimeOutcome.COMPLETED
+        )
+        return RuntimeStepResult(
+            session_id,
+            previous,
+            context.current_stage,
+            artifact,
+            outcome=outcome,
+        )
+
+    async def _persist_durable_tool_record(
+        self,
+        context: InterviewBlackboard,
+        record: object,
+    ) -> None:
+        key = getattr(record, "invocation_key", None)
+        fingerprint = getattr(key, "fingerprint", None)
+        if not fingerprint:
+            raise ValueError("Durable tool record has no invocation fingerprint")
+        context.durable_tool_records[fingerprint] = record
+        await self.checkpoint_store.save(context)
 
     async def submit_human_review(
         self,

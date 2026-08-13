@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from interview_agent_runtime.tools import Tool, ToolContext, ToolRegistry
+from interview_agent_runtime.tools import Tool, ToolContext, ToolRegistry, ToolSpec
 
 
 async def retrieve_resume(context: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -107,14 +107,27 @@ async def aggregate_evidence(context: ToolContext, args: dict[str, Any]) -> dict
 
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(Tool("resume.retrieve", "Retrieve parsed resume profile.", retrieve_resume))
-    registry.register(Tool("jd.retrieve", "Retrieve JD and competency dimensions.", retrieve_jd))
-    registry.register(Tool("question_bank.search", "Search Qdrant-backed question bank.", search_question_bank))
-    registry.register(Tool("knowledge.retrieve", "Retrieve domain knowledge.", retrieve_knowledge))
-    registry.register(Tool("rubric.retrieve", "Retrieve scoring rubric.", retrieve_rubric))
-    registry.register(Tool("answer.semantic_match", "Match answer against rubric/reference.", semantic_match))
-    registry.register(Tool("evaluation.history", "Read evaluation history.", evaluation_history))
-    registry.register(Tool("evidence.aggregate", "Aggregate evidence.", aggregate_evidence))
+    read_tools = [
+        ("resume.retrieve", "Retrieve parsed resume profile.", retrieve_resume),
+        ("jd.retrieve", "Retrieve JD and competency dimensions.", retrieve_jd),
+        ("question_bank.search", "Search Qdrant-backed question bank.", search_question_bank),
+        ("knowledge.retrieve", "Retrieve domain knowledge.", retrieve_knowledge),
+        ("rubric.retrieve", "Retrieve scoring rubric.", retrieve_rubric),
+        ("answer.semantic_match", "Match answer against rubric/reference.", semantic_match),
+        ("evaluation.history", "Read evaluation history.", evaluation_history),
+        ("evidence.aggregate", "Aggregate evidence.", aggregate_evidence),
+    ]
+    for name, description, handler in read_tools:
+        registry.register(
+            Tool(
+                spec=ToolSpec(
+                    name=name,
+                    description=description,
+                    parallel_safe=True,
+                ),
+                handler=handler,
+            )
+        )
     return registry
 
 

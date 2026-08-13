@@ -88,6 +88,10 @@ class ProfileAgent(BaseInterviewAgent):
                 trace=run_context.trace,
                 execution_strategy=run_context.execution_strategy,
                 max_duplicate_calls=run_context.max_duplicate_calls,
+                durable_records=run_context.blackboard.durable_tool_records,
+                persist_durable_tool_record=run_context.persist_durable_tool_record,
+                run_id=run_context.trace.run_id if run_context.trace else None,
+                context_budget_tokens=run_context.context_budget_tokens,
             )
         )
         resume, jd = self._tool_inputs(loop_result.messages)
