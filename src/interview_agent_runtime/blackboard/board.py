@@ -54,6 +54,11 @@ class InterviewBlackboard:
     asked_question_ids: set[str] = field(default_factory=set)
     followed_targets: set[str] = field(default_factory=set)
     question_follow_up_rounds: dict[str, int] = field(default_factory=dict)
+    review_required: bool = False
+    review_status: str = "not_required"
+    review_reasons: list[str] = field(default_factory=list)
+    review_reviewer: str = ""
+    review_decision_reason: str = ""
     runtime_metadata: RuntimeMetadata = field(default_factory=RuntimeMetadata)
     plan_policy: InterviewPlanPolicy = field(default_factory=InterviewPlanPolicy, repr=False, compare=False)
 

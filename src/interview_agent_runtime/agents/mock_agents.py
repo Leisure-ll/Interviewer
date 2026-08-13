@@ -28,6 +28,7 @@ from interview_agent_runtime.domain import (
     InterviewStage,
     PositionProfile,
 )
+from interview_agent_runtime.execution import ExecutionStrategy
 from interview_agent_runtime.evaluation import EvidenceDrivenEvaluator
 from interview_agent_runtime.prompting import PromptAssembler
 from interview_agent_runtime.providers import LLMProvider
@@ -41,6 +42,7 @@ from interview_agent_runtime.tools import ToolContext, ToolExecutor
 class ProfileAgent(BaseInterviewAgent):
     name = "ProfileAgent"
     stages = {InterviewStage.PROFILE_ANALYSIS}
+    execution_strategy = ExecutionStrategy.REACT
     draft_schema = "ProfileDraft"
 
     def __init__(self, llm_provider: Optional[LLMProvider] = None, prompt_assembler: Optional[PromptAssembler] = None):
@@ -75,8 +77,8 @@ class ProfileAgent(BaseInterviewAgent):
                 tool_executor=run_context.tools,
                 tool_context=tool_context,
                 response_schema=self.draft_schema,
-                max_rounds=4,
-                max_tool_calls=4,
+                max_rounds=run_context.max_iterations,
+                max_tool_calls=run_context.max_tool_calls,
                 token_budget=run_context.token_budget,
                 timeout_seconds=run_context.timeout_seconds,
                 memory_scope=run_context.memory_scope,
@@ -84,6 +86,8 @@ class ProfileAgent(BaseInterviewAgent):
                 include_interaction_memory=False,
                 include_domain_snapshot=False,
                 trace=run_context.trace,
+                execution_strategy=run_context.execution_strategy,
+                max_duplicate_calls=run_context.max_duplicate_calls,
             )
         )
         resume, jd = self._tool_inputs(loop_result.messages)
@@ -209,6 +213,7 @@ class ProfileAgent(BaseInterviewAgent):
 class PlannerAgent(BaseInterviewAgent):
     name = "PlannerAgent"
     stages = {InterviewStage.INTERVIEW_PLANNING}
+    execution_strategy = ExecutionStrategy.DETERMINISTIC
 
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "interview-planning"
@@ -297,6 +302,7 @@ class QuestionAgent(BaseInterviewAgent):
         InterviewStage.NEXT_DIMENSION,
         InterviewStage.FOLLOW_UP,
     }
+    execution_strategy = ExecutionStrategy.DETERMINISTIC
 
     def __init__(self, pipeline: Optional[QuestionGenerationPipeline] = None):
         self.pipeline = pipeline or QuestionGenerationPipeline()
@@ -319,6 +325,7 @@ class QuestionAgent(BaseInterviewAgent):
 class EvaluatorAgent(BaseInterviewAgent):
     name = "EvaluatorAgent"
     stages = {InterviewStage.EVALUATING}
+    execution_strategy = ExecutionStrategy.STRUCTURED_LLM
     draft_schema = "EvaluationDraft"
 
     def __init__(
@@ -368,6 +375,7 @@ class EvaluatorAgent(BaseInterviewAgent):
 class FollowUpAgent(BaseInterviewAgent):
     name = "FollowUpAgent"
     stages = {InterviewStage.DECISION}
+    execution_strategy = ExecutionStrategy.STRUCTURED_LLM
     draft_schema = "FollowUpDraft"
 
     def __init__(self, llm_provider: Optional[LLMProvider] = None, prompt_assembler: Optional[PromptAssembler] = None):
@@ -461,6 +469,7 @@ class FollowUpAgent(BaseInterviewAgent):
 class ReportAgent(BaseInterviewAgent):
     name = "ReportAgent"
     stages = {InterviewStage.REPORTING}
+    execution_strategy = ExecutionStrategy.STRUCTURED_LLM
 
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "interview-report"

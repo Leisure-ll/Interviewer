@@ -8,6 +8,7 @@ from interview_agent_runtime.artifacts import AgentArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.context import AgentContext
 from interview_agent_runtime.domain import InterviewStage
+from interview_agent_runtime.execution import ExecutionStrategy
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolExecutor
 from interview_agent_runtime.memory import MemoryScope
@@ -38,11 +39,16 @@ class AgentRunContext:
     event_bus: Optional["InMemoryEventBus"] = None
     trace: Optional["TraceContext"] = None
     memory_scope: Optional[MemoryScope] = None
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.STRUCTURED_LLM
+    max_iterations: int = 4
+    max_tool_calls: int = 8
+    max_duplicate_calls: int = 1
 
 
 class BaseInterviewAgent(ABC):
     name: str
     stages: set[InterviewStage]
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.STRUCTURED_LLM
 
     def decide(self, context: InterviewBlackboard) -> AgentDecision:
         return AgentDecision(context.current_stage in self.stages, reason=f"stage={context.current_stage.value}")

@@ -1,5 +1,17 @@
 from .mcp import FakeMCPClient, MCPClient, MCPToolAdapter, MCPToolDefinition
-from .registry import Tool, ToolContext, ToolExecutor, ToolPolicy, ToolRegistry, ToolResult, ToolSpec
+from .registry import (
+    ResourceVersionResolver,
+    Tool,
+    ToolContext,
+    ToolExecutionRecord,
+    ToolExecutor,
+    ToolGovernanceState,
+    ToolInvocationKey,
+    ToolPolicy,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 
 __all__ = [
     "FakeMCPClient",
@@ -8,11 +20,15 @@ __all__ = [
     "MCPToolDefinition",
     "Tool",
     "ToolContext",
+    "ToolExecutionRecord",
     "ToolExecutor",
+    "ToolGovernanceState",
+    "ToolInvocationKey",
     "ToolPolicy",
     "ToolRegistry",
     "ToolResult",
     "ToolSpec",
+    "ResourceVersionResolver",
 ]
 
 

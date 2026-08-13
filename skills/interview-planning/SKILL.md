@@ -9,6 +9,7 @@ output_schema: InterviewPlanArtifact
 timeout: 8
 retry: 1
 max_tokens: 2000
+execution_strategy: deterministic
 version: 1.0
 ---
 

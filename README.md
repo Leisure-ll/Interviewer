@@ -66,12 +66,48 @@ InterviewRuntime
   -> AgentContextBuilder
   -> Specialist Agent
   -> Skill
+  -> Execution Strategy
   -> Authorized Tools
   -> Artifact
   -> Blackboard
   -> Evidence / CapabilityProfile
+  -> HumanReviewPolicy
   -> Checkpoint / EventBus
 ```
+
+### Execution Strategy
+
+The six specialist agents keep a fixed topology, but they do not share one execution
+mode:
+
+- `ProfileAgent`: `react`, using `AgentLoop`, Message Protocol, SessionMemory, and tool
+  calling for resume/JD exploration.
+- `PlannerAgent` and `QuestionAgent`: `deterministic`, using runtime-controlled domain
+  pipelines.
+- `EvaluatorAgent`, `FollowUpAgent`, and `ReportAgent`: `structured_llm`, using bounded
+  structured model calls where the input and output contract is stable.
+
+`ExecutionStrategy` is separate from `InterviewStage` and `Skill`. Runtime resolves the
+skill declaration first and falls back to the agent declaration.
+
+### Tool Invocation Governance
+
+`AgentLoop` keeps iteration and tool-call budgets separately. Each run also tracks a
+canonical `ToolInvocationKey`, `ToolExecutionRecord`, cache hits, duplicate calls, and
+resource-version-aware cache identity. A read-only idempotent tool may reuse a successful
+result; side-effect or non-idempotent tools are never treated as ordinary cache entries.
+Retryable failures remain eligible for a later retry, while repeated successful decisions
+can be rejected by the duplicate guard. A single response that requests more tools than
+the remaining tool budget is rejected as a batch and receives explicit tool messages.
+
+### Human Review Gate
+
+After `ReportArtifact` is published, the deterministic `HumanReviewPolicy` evaluates
+report confidence, evidence count, dimension coverage, and optional uncertainty rules.
+The result is persisted on `InterviewBlackboard`. Low-confidence or insufficient reports
+enter `WAITING_HUMAN_REVIEW`; `InterviewRuntime.submit_human_review()` records the
+reviewer decision and transitions to `FINISHED` or `FAILED`. Human review is a runtime
+policy gate, not a seventh agent.
 
 Core runtime remains independent from FastAPI, LangGraph, Qdrant, Redis, MySQL, ASR,
 TTS, and digital-human vendors. Those systems should be connected through adapters.

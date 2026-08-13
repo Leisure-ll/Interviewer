@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
+
+from interview_agent_runtime.execution import ExecutionStrategy
 
 
 @dataclass
@@ -17,6 +19,10 @@ class SkillDefinition:
     retry: int = 0
     max_tokens: int = 2500
     version: str = "1.0"
+    execution_strategy: Optional[ExecutionStrategy] = None
+    max_iterations: int = 4
+    max_tool_calls: int = 8
+    max_duplicate_calls: int = 1
 
 
 class SkillRegistry:
@@ -47,6 +53,7 @@ class SkillRegistry:
                 output_schema="CandidateProfileArtifact",
                 timeout=8,
                 retry=1,
+                execution_strategy=ExecutionStrategy.REACT,
             )
         )
         registry.register(
@@ -58,6 +65,7 @@ class SkillRegistry:
                 output_schema="InterviewPlanArtifact",
                 timeout=8,
                 retry=1,
+                execution_strategy=ExecutionStrategy.DETERMINISTIC,
             )
         )
         registry.register(
@@ -69,6 +77,7 @@ class SkillRegistry:
                 output_schema="QuestionArtifact",
                 timeout=15,
                 retry=1,
+                execution_strategy=ExecutionStrategy.DETERMINISTIC,
             )
         )
         registry.register(
@@ -80,6 +89,7 @@ class SkillRegistry:
                 output_schema="EvaluationArtifact",
                 timeout=15,
                 retry=1,
+                execution_strategy=ExecutionStrategy.STRUCTURED_LLM,
             )
         )
         registry.register(
@@ -91,6 +101,7 @@ class SkillRegistry:
                 output_schema="FollowUpDecisionArtifact",
                 timeout=2,
                 retry=0,
+                execution_strategy=ExecutionStrategy.STRUCTURED_LLM,
             )
         )
         registry.register(
@@ -102,6 +113,7 @@ class SkillRegistry:
                 output_schema="InterviewReportArtifact",
                 timeout=20,
                 retry=1,
+                execution_strategy=ExecutionStrategy.STRUCTURED_LLM,
             )
         )
         return registry
@@ -139,6 +151,10 @@ def _parse_skill_markdown(path: Path) -> SkillDefinition:
         retry=int(frontmatter.get("retry", 0)),
         max_tokens=int(frontmatter.get("max_tokens", 2500)),
         version=str(frontmatter.get("version", "1.0")),
+        execution_strategy=_parse_execution_strategy(frontmatter.get("execution_strategy")),
+        max_iterations=int(frontmatter.get("max_iterations", 4)),
+        max_tool_calls=int(frontmatter.get("max_tool_calls", 8)),
+        max_duplicate_calls=int(frontmatter.get("max_duplicate_calls", 1)),
     )
 
 
@@ -167,5 +183,11 @@ def _parse_frontmatter(raw: str) -> dict[str, Any]:
             except ValueError:
                 data[current_key] = value.strip('"').strip("'")
     return data
+
+
+def _parse_execution_strategy(value: Any) -> Optional[ExecutionStrategy]:
+    if value in (None, ""):
+        return None
+    return ExecutionStrategy(str(value))
 
 

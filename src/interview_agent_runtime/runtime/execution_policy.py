@@ -13,6 +13,9 @@ class ExecutionPolicy:
     retry: int = 0
     fallback: Optional[Callable[[], Awaitable[T]]] = None
     name: str = "default"
+    max_iterations: int = 4
+    max_tool_calls: int = 8
+    max_duplicate_calls: int = 1
 
 
 @dataclass

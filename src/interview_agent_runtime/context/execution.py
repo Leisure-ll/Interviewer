@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Set
 
 from interview_agent_runtime.domain import InterviewStage
+from interview_agent_runtime.execution import ExecutionStrategy
 
 
 @dataclass
@@ -17,3 +18,4 @@ class ExecutionContext:
     timeout_seconds: float
     retry: int
     session_allowed_tools: Optional[Set[str]] = None
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.STRUCTURED_LLM

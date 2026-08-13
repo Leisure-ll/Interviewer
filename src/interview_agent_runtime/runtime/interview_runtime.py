@@ -9,6 +9,7 @@ from interview_agent_runtime.artifacts import AgentArtifact, AnswerArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
+from interview_agent_runtime.execution import ExecutionStrategy
 from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
 from interview_agent_runtime.memory import MemoryScope
 from interview_agent_runtime.providers import LLMProvider
@@ -20,6 +21,7 @@ from interview_agent_runtime.runtime.events import (
     TraceContext,
 )
 from interview_agent_runtime.runtime.execution_policy import ExecutionPolicy, TaskExecutor
+from interview_agent_runtime.runtime.review import HumanReviewPolicy
 from interview_agent_runtime.runtime.state_machine import InterviewStateMachine
 from interview_agent_runtime.domain import InterviewStage
 from interview_agent_runtime.skills import SkillRegistry
@@ -50,6 +52,7 @@ class InterviewRuntime:
         memory: Optional[SessionMemory] = None,
         llm_provider: Optional[LLMProvider] = None,
         memory_compressor: Optional[MemoryCompressor] = None,
+        human_review_policy: Optional[HumanReviewPolicy] = None,
     ) -> None:
         self.state_machine = state_machine
         self.agent_registry = agent_registry
@@ -63,6 +66,7 @@ class InterviewRuntime:
         self.context_builder = context_builder
         self.memory = memory
         self.llm_provider = llm_provider
+        self.human_review_policy = human_review_policy or HumanReviewPolicy()
         self.agent_loop = (
             AgentLoop(llm_provider, memory, event_bus, memory_compressor)
             if llm_provider is not None and memory is not None
@@ -155,7 +159,11 @@ class InterviewRuntime:
             await self.event_bus.emit(RuntimeEvent(RuntimeEventType.QUESTION_ASKED, session_id))
             return RuntimeStepResult(session_id, previous, context.current_stage, None)
 
-        if previous in {InterviewStage.FINISHED, InterviewStage.FAILED}:
+        if previous in {
+            InterviewStage.FINISHED,
+            InterviewStage.FAILED,
+            InterviewStage.WAITING_HUMAN_REVIEW,
+        }:
             return RuntimeStepResult(session_id, previous, previous, None)
 
         if previous == InterviewStage.INIT:
@@ -169,12 +177,20 @@ class InterviewRuntime:
             raise RuntimeError(f"Agent refused stage {previous.value}: {decision.reason}")
 
         skill = self.skill_registry.resolve(agent.required_skill(context))
+        execution_strategy = skill.execution_strategy or agent.execution_strategy
         visible_tools = self.tool_policy.authorize(
             agent.name,
             skill,
             context.session_allowed_tools,
         )
-        policy = ExecutionPolicy(timeout_seconds=skill.timeout, retry=skill.retry, name=f"{agent.name}:{skill.name}")
+        policy = ExecutionPolicy(
+            timeout_seconds=skill.timeout,
+            retry=skill.retry,
+            name=f"{agent.name}:{skill.name}",
+            max_iterations=skill.max_iterations,
+            max_tool_calls=skill.max_tool_calls,
+            max_duplicate_calls=skill.max_duplicate_calls,
+        )
         execution_context = ExecutionContext(
             session_id=session_id,
             current_stage=previous,
@@ -185,6 +201,7 @@ class InterviewRuntime:
             timeout_seconds=skill.timeout,
             retry=skill.retry,
             session_allowed_tools=context.session_allowed_tools,
+            execution_strategy=execution_strategy,
         )
         agent_context = self.context_builder.build(agent.name, context, execution_context)
         run_id = f"run_{uuid4().hex[:12]}"
@@ -204,6 +221,7 @@ class InterviewRuntime:
                     "skill": skill.name,
                     "context_type": type(agent_context).__name__,
                     "authorized_tools": sorted(visible_tools),
+                    "execution_strategy": execution_strategy.value,
                 },
                 trace=run_trace,
             )
@@ -223,6 +241,10 @@ class InterviewRuntime:
             event_bus=self.event_bus,
             trace=run_trace,
             memory_scope=MemoryScope(session_id, agent.name),
+            execution_strategy=execution_strategy,
+            max_iterations=skill.max_iterations,
+            max_tool_calls=skill.max_tool_calls,
+            max_duplicate_calls=skill.max_duplicate_calls,
         )
         result = await self.executor.execute(lambda: agent.execute_run(run_context), policy)
         if not result.ok or result.value is None:
@@ -236,6 +258,14 @@ class InterviewRuntime:
         self._validate_artifact_schema(artifact, skill.output_schema)
         context.publish(artifact)
         context.current_stage = self.state_machine.transition(previous, context, artifact)
+        review_decision = None
+        if artifact.kind == "interview_report":
+            review_decision = self.human_review_policy.evaluate(context, artifact)
+            context.review_required = review_decision.requires_human_review
+            context.review_status = review_decision.status.value
+            context.review_reasons = list(review_decision.reasons)
+            if review_decision.requires_human_review:
+                context.current_stage = InterviewStage.WAITING_HUMAN_REVIEW
 
         await self.checkpoint_store.save(context)
         await self._emit_artifact_event(context, artifact, previous)
@@ -243,9 +273,36 @@ class InterviewRuntime:
             RuntimeEvent(
                 RuntimeEventType.AGENT_FINISHED,
                 session_id,
-                metadata={"agent": agent.name, "stage": previous.value, "artifact": artifact.kind},
+                metadata={
+                    "agent": agent.name,
+                    "stage": previous.value,
+                    "artifact": artifact.kind,
+                    "execution_strategy": execution_strategy.value,
+                    **(
+                        {
+                            "review_required": review_decision.requires_human_review,
+                            "review_status": review_decision.status.value,
+                        }
+                        if review_decision is not None
+                        else {}
+                    ),
+                },
             )
         )
+        if review_decision is not None:
+            await self.event_bus.emit(
+                RuntimeEvent(
+                    RuntimeEventType.REVIEW_REQUIRED
+                    if review_decision.requires_human_review
+                    else RuntimeEventType.REVIEW_AUTO_COMPLETED,
+                    session_id,
+                    metadata={
+                        "status": review_decision.status.value,
+                        "reasons": review_decision.reasons,
+                        "confidence": review_decision.confidence,
+                    },
+                )
+            )
         await self.event_bus.emit(
             RuntimeEvent(
                 RuntimeEventType.STATE_TRANSITIONED,
@@ -259,6 +316,44 @@ class InterviewRuntime:
         )
         return RuntimeStepResult(session_id, previous, context.current_stage, artifact)
 
+    async def submit_human_review(
+        self,
+        session_id: str,
+        *,
+        approved: bool,
+        reviewer: str = "human",
+        reason: str = "",
+    ) -> InterviewBlackboard:
+        context = await self.load_context(session_id)
+        if context.current_stage != InterviewStage.WAITING_HUMAN_REVIEW:
+            raise RuntimeError(f"Session is not waiting for human review: {context.current_stage.value}")
+        context.review_required = True
+        context.review_status = "approved" if approved else "rejected"
+        context.review_reviewer = reviewer
+        context.review_decision_reason = reason
+        context.current_stage = InterviewStage.FINISHED if approved else InterviewStage.FAILED
+        await self.checkpoint_store.save(context)
+        await self.event_bus.emit(
+            RuntimeEvent(
+                RuntimeEventType.HUMAN_REVIEW_SUBMITTED,
+                session_id,
+                metadata={
+                    "approved": approved,
+                    "reviewer": reviewer,
+                    "reason": reason,
+                    "to": context.current_stage.value,
+                },
+            )
+        )
+        await self.event_bus.emit(
+            RuntimeEvent(
+                RuntimeEventType.STATE_TRANSITIONED,
+                session_id,
+                metadata={"from": InterviewStage.WAITING_HUMAN_REVIEW.value, "to": context.current_stage.value},
+            )
+        )
+        return context
+
     def _validate_artifact_schema(self, artifact: AgentArtifact, output_schema: str) -> None:
         if not output_schema:
             return
@@ -270,7 +365,12 @@ class InterviewRuntime:
     async def run_until_waiting_or_done(self, session_id: str, max_steps: int = 20) -> InterviewBlackboard:
         for _ in range(max_steps):
             context = await self.load_context(session_id)
-            if context.current_stage in {InterviewStage.LISTENING, InterviewStage.FINISHED, InterviewStage.FAILED}:
+            if context.current_stage in {
+                InterviewStage.LISTENING,
+                InterviewStage.FINISHED,
+                InterviewStage.FAILED,
+                InterviewStage.WAITING_HUMAN_REVIEW,
+            }:
                 return context
             await self.run_step(session_id)
         raise RuntimeError("Runtime step budget exhausted")

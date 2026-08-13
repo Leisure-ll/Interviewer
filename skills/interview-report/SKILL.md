@@ -9,6 +9,7 @@ output_schema: InterviewReportArtifact
 timeout: 20
 retry: 1
 max_tokens: 2500
+execution_strategy: structured_llm
 version: 1.0
 ---
 

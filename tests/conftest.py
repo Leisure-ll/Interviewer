@@ -22,6 +22,7 @@ def make_mock_runtime(**overrides) -> InterviewRuntime:
         "event_bus": overrides.pop("event_bus", harness.event_bus),
         "executor": overrides.pop("executor", TaskExecutor()),
         "context_builder": overrides.pop("context_builder", harness.context_builder),
+        "human_review_policy": overrides.pop("human_review_policy", None),
     }
     if overrides:
         raise TypeError(f"Unsupported runtime override(s): {', '.join(sorted(overrides))}")

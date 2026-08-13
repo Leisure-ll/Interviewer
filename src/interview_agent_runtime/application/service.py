@@ -73,6 +73,22 @@ class InterviewApplicationService:
         board = await self.runtime.load_context(session_id)
         return board.report
 
+    async def submit_human_review(
+        self,
+        session_id: str,
+        *,
+        approved: bool,
+        reviewer: str = "human",
+        reason: str = "",
+    ) -> InterviewStatus:
+        board = await self.runtime.submit_human_review(
+            session_id,
+            approved=approved,
+            reviewer=reviewer,
+            reason=reason,
+        )
+        return self._status(board)
+
     def _status(self, board: InterviewBlackboard) -> InterviewStatus:
         return InterviewStatus(
             session_id=board.session_id,

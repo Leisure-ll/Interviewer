@@ -10,6 +10,7 @@ output_schema: EvaluationArtifact
 timeout: 15
 retry: 1
 max_tokens: 2500
+execution_strategy: structured_llm
 version: 1.0
 ---
 

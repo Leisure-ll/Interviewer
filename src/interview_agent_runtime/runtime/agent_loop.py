@@ -8,13 +8,14 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from interview_agent_runtime.blackboard import InterviewBlackboard
+from interview_agent_runtime.execution import ExecutionStrategy, StopReason
 from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
 from interview_agent_runtime.memory import MemoryContextBuilder, MemoryScope
 from interview_agent_runtime.messages import AgentMessage
 from interview_agent_runtime.providers import LLMProvider, LLMRequest, LLMResponse
 from interview_agent_runtime.runtime.events import TraceContext
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
-from interview_agent_runtime.tools import ToolContext, ToolExecutor
+from interview_agent_runtime.tools import ToolContext, ToolExecutor, ToolGovernanceState
 
 
 @dataclass
@@ -38,6 +39,8 @@ class AgentRunRequest:
     include_interaction_memory: bool = True
     include_domain_snapshot: bool = True
     trace: Optional[TraceContext] = None
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.REACT
+    max_duplicate_calls: int = 1
 
 
 @dataclass
@@ -49,12 +52,21 @@ class AgentRunResult:
     stop_reason: str
     parsed: Optional[dict[str, Any]] = None
     responses: list[LLMResponse] = field(default_factory=list)
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.REACT
+    unique_tool_calls: int = 0
+    cache_hits: int = 0
+    duplicate_calls: int = 0
+    duration_ms: float = 0.0
+    total_tokens: int = 0
+    requested_tool_calls: int = 0
+    executed_tool_calls: int = 0
 
 
 class AgentLoop:
     """K-inspired ReAct loop for one specialist agent invocation.
 
     It owns LLM/tool messages only. Domain state remains the Runtime's Blackboard.
+    Tool governance state is deliberately scoped to this run.
     """
 
     def __init__(
@@ -68,17 +80,11 @@ class AgentLoop:
         self.memory = memory
         self.event_bus = event_bus
         self.compressor = compressor
-        self.memory_context_builder = MemoryContextBuilder(
-            memory,
-            compressor=compressor,
-        )
+        self.memory_context_builder = MemoryContextBuilder(memory, compressor=compressor)
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
         loop_trace = self._child_trace(request, kind="loop")
-        scope = request.memory_scope or MemoryScope(
-            request.session_id,
-            request.agent_name,
-        )
+        scope = request.memory_scope or MemoryScope(request.session_id, request.agent_name)
         memory_key = request.memory_key or scope.key()
         if request.include_interaction_memory:
             memory_context = await self.memory_context_builder.build(
@@ -101,16 +107,23 @@ class AgentLoop:
         await self._emit(
             RuntimeEventType.AGENT_LOOP_STARTED,
             request,
-            metadata={"max_rounds": request.max_rounds},
+            metadata={
+                "max_rounds": request.max_rounds,
+                "max_tool_calls": request.max_tool_calls,
+                "execution_strategy": request.execution_strategy.value,
+            },
             trace=loop_trace,
         )
 
         responses: list[LLMResponse] = []
         rounds = 0
         tool_calls = 0
+        requested_tool_calls = 0
+        executed_tool_calls = 0
         total_tokens = 0
         last_message = AgentMessage.assistant("")
         started = time.perf_counter()
+        governance = ToolGovernanceState(request.max_duplicate_calls)
 
         try:
             for round_no in range(1, request.max_rounds + 1):
@@ -122,8 +135,13 @@ class AgentLoop:
                         last_message,
                         rounds,
                         tool_calls,
-                        "tool_budget_exceeded",
+                        StopReason.TOOL_BUDGET_EXCEEDED.value,
                         responses,
+                        governance=governance,
+                        requested_tool_calls=requested_tool_calls,
+                        executed_tool_calls=executed_tool_calls,
+                        total_tokens=total_tokens,
+                        started=started,
                         trace=loop_trace,
                     )
 
@@ -168,46 +186,62 @@ class AgentLoop:
                         last_message,
                         rounds,
                         tool_calls,
-                        "token_budget_exceeded",
+                        StopReason.TOKEN_BUDGET_EXCEEDED.value,
                         responses,
+                        governance=governance,
+                        requested_tool_calls=requested_tool_calls,
+                        executed_tool_calls=executed_tool_calls,
+                        total_tokens=total_tokens,
+                        started=started,
                         trace=loop_trace,
                     )
 
                 if not last_message.tool_calls:
-                    parsed = _parse_json_object(last_message.content)
-                    await self._emit(
-                        RuntimeEventType.AGENT_LOOP_FINISHED,
+                    return await self._completed(
                         request,
-                        metadata={
-                            "rounds": rounds,
-                            "tool_calls": tool_calls,
-                            "stop_reason": "completed",
-                            "duration_ms": (time.perf_counter() - started) * 1000,
-                        },
+                        messages,
+                        last_message,
+                        rounds,
+                        tool_calls,
+                        responses,
+                        governance,
+                        requested_tool_calls,
+                        executed_tool_calls,
+                        total_tokens,
+                        started,
+                        loop_trace,
+                    )
+
+                requested_tool_calls += len(last_message.tool_calls)
+                remaining_budget = request.max_tool_calls - tool_calls
+                if len(last_message.tool_calls) > remaining_budget:
+                    await self._append_batch_rejection(
+                        request,
+                        messages,
+                        memory_key,
+                        last_message.tool_calls,
+                        remaining_budget,
+                        round_no,
                         trace=loop_trace,
                     )
-                    return AgentRunResult(
-                        final_message=last_message,
-                        messages=messages,
-                        rounds=rounds,
-                        tool_calls=tool_calls,
-                        stop_reason="completed",
-                        parsed=parsed,
-                        responses=responses,
+                    tool_calls = max(0, remaining_budget)
+                    return await self._stopped(
+                        request,
+                        messages,
+                        last_message,
+                        rounds,
+                        tool_calls,
+                        StopReason.TOOL_BUDGET_EXCEEDED.value,
+                        responses,
+                        governance=governance,
+                        requested_tool_calls=requested_tool_calls,
+                        executed_tool_calls=executed_tool_calls,
+                        total_tokens=total_tokens,
+                        started=started,
+                        trace=loop_trace,
                     )
 
                 for tool_call in last_message.tool_calls:
-                    if tool_calls >= request.max_tool_calls:
-                        return await self._stopped(
-                            request,
-                            messages,
-                            last_message,
-                            rounds,
-                            tool_calls,
-                            "tool_budget_exceeded",
-                            responses,
-                            trace=loop_trace,
-                        )
                     tool_calls += 1
                     tool_span = self._child_trace(request, kind="tool", parent=loop_trace)
                     await self._emit(
@@ -220,13 +254,16 @@ class AgentLoop:
                         tool_call,
                         request.tool_context,
                         request.visible_tools,
+                        governance=governance,
+                        round_no=round_no,
                     )
+                    executed_tool_calls += 1
                     if result.ok:
                         content = json.dumps(result.value, ensure_ascii=False)
                         event_type = RuntimeEventType.TOOL_SUCCEEDED
                     else:
                         content = json.dumps(
-                            {"ok": False, "error": result.error},
+                            {"ok": False, "error": result.error, "status": result.status},
                             ensure_ascii=False,
                         )
                         event_type = RuntimeEventType.TOOL_FAILED
@@ -245,9 +282,28 @@ class AgentLoop:
                             "tool": tool_call.name,
                             "ok": result.ok,
                             "duration_ms": result.duration_ms,
+                            "status": result.status,
+                            "cache_hit": result.cache_hit,
+                            "duplicate": result.duplicate,
                         },
                         trace=tool_span,
                     )
+                    if governance.repeated_tool_call:
+                        return await self._stopped(
+                            request,
+                            messages,
+                            last_message,
+                            rounds,
+                            tool_calls,
+                            StopReason.REPEATED_TOOL_CALL.value,
+                            responses,
+                            governance=governance,
+                            requested_tool_calls=requested_tool_calls,
+                            executed_tool_calls=executed_tool_calls,
+                            total_tokens=total_tokens,
+                            started=started,
+                            trace=loop_trace,
+                        )
 
             return await self._stopped(
                 request,
@@ -255,8 +311,13 @@ class AgentLoop:
                 last_message,
                 rounds,
                 tool_calls,
-                "max_rounds",
+                StopReason.MAX_ROUNDS.value,
                 responses,
+                governance=governance,
+                requested_tool_calls=requested_tool_calls,
+                executed_tool_calls=executed_tool_calls,
+                total_tokens=total_tokens,
+                started=started,
                 trace=loop_trace,
             )
         except asyncio.TimeoutError:
@@ -266,8 +327,13 @@ class AgentLoop:
                 last_message,
                 rounds,
                 tool_calls,
-                "timeout",
+                StopReason.TIMEOUT.value,
                 responses,
+                governance=governance,
+                requested_tool_calls=requested_tool_calls,
+                executed_tool_calls=executed_tool_calls,
+                total_tokens=total_tokens,
+                started=started,
                 trace=loop_trace,
             )
         except Exception as exc:
@@ -277,11 +343,65 @@ class AgentLoop:
                 last_message,
                 rounds,
                 tool_calls,
-                "provider_error",
+                StopReason.PROVIDER_ERROR.value,
                 responses,
                 error_type=type(exc).__name__,
+                governance=governance,
+                requested_tool_calls=requested_tool_calls,
+                executed_tool_calls=executed_tool_calls,
+                total_tokens=total_tokens,
+                started=started,
                 trace=loop_trace,
             )
+
+    async def _completed(
+        self,
+        request: AgentRunRequest,
+        messages: list[AgentMessage],
+        last_message: AgentMessage,
+        rounds: int,
+        tool_calls: int,
+        responses: list[LLMResponse],
+        governance: ToolGovernanceState,
+        requested_tool_calls: int,
+        executed_tool_calls: int,
+        total_tokens: int,
+        started: float,
+        trace: Optional[TraceContext],
+    ) -> AgentRunResult:
+        duration_ms = (time.perf_counter() - started) * 1000
+        await self._emit(
+            RuntimeEventType.AGENT_LOOP_FINISHED,
+            request,
+            metadata={
+                "rounds": rounds,
+                "tool_calls": tool_calls,
+                "stop_reason": StopReason.COMPLETED.value,
+                "duration_ms": duration_ms,
+                "execution_strategy": request.execution_strategy.value,
+                "unique_tool_calls": governance.unique_tool_calls,
+                "cache_hits": governance.cache_hits,
+                "duplicate_calls": governance.duplicate_calls,
+            },
+            trace=trace,
+        )
+        return AgentRunResult(
+            final_message=last_message,
+            messages=messages,
+            rounds=rounds,
+            tool_calls=tool_calls,
+            stop_reason=StopReason.COMPLETED.value,
+            parsed=_parse_json_object(last_message.content),
+            responses=responses,
+            execution_strategy=request.execution_strategy,
+            unique_tool_calls=governance.unique_tool_calls,
+            cache_hits=governance.cache_hits,
+            duplicate_calls=governance.duplicate_calls,
+            duration_ms=duration_ms,
+            total_tokens=total_tokens,
+            requested_tool_calls=requested_tool_calls,
+            executed_tool_calls=executed_tool_calls,
+        )
 
     async def _stopped(
         self,
@@ -293,8 +413,14 @@ class AgentLoop:
         reason: str,
         responses: list[LLMResponse],
         error_type: Optional[str] = None,
+        governance: Optional[ToolGovernanceState] = None,
+        requested_tool_calls: int = 0,
+        executed_tool_calls: int = 0,
+        total_tokens: int = 0,
+        started: Optional[float] = None,
         trace: Optional[TraceContext] = None,
     ) -> AgentRunResult:
+        duration_ms = (time.perf_counter() - started) * 1000 if started else 0.0
         await self._emit(
             RuntimeEventType.AGENT_LOOP_STOPPED,
             request,
@@ -302,6 +428,11 @@ class AgentLoop:
                 "rounds": rounds,
                 "tool_calls": tool_calls,
                 "stop_reason": reason,
+                "execution_strategy": request.execution_strategy.value,
+                "unique_tool_calls": governance.unique_tool_calls if governance else 0,
+                "cache_hits": governance.cache_hits if governance else 0,
+                "duplicate_calls": governance.duplicate_calls if governance else 0,
+                "duration_ms": duration_ms,
                 **({"error_type": error_type} if error_type else {}),
             },
             trace=trace,
@@ -314,7 +445,53 @@ class AgentLoop:
             stop_reason=reason,
             parsed=_parse_json_object(last_message.content),
             responses=responses,
+            execution_strategy=request.execution_strategy,
+            unique_tool_calls=governance.unique_tool_calls if governance else 0,
+            cache_hits=governance.cache_hits if governance else 0,
+            duplicate_calls=governance.duplicate_calls if governance else 0,
+            duration_ms=duration_ms,
+            total_tokens=total_tokens,
+            requested_tool_calls=requested_tool_calls,
+            executed_tool_calls=executed_tool_calls,
         )
+
+    async def _append_batch_rejection(
+        self,
+        request: AgentRunRequest,
+        messages: list[AgentMessage],
+        memory_key: str,
+        tool_calls: list[Any],
+        remaining_budget: int,
+        round_no: int,
+        *,
+        trace: Optional[TraceContext],
+    ) -> None:
+        feedback = {
+            "ok": False,
+            "error": "tool call batch rejected",
+            "requested_tool_calls": len(tool_calls),
+            "remaining_tool_budget": max(0, remaining_budget),
+        }
+        for tool_call in tool_calls:
+            tool_message = AgentMessage.tool(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=json.dumps(feedback, ensure_ascii=False),
+            )
+            messages.append(tool_message)
+            await self.memory.append(memory_key, tool_message)
+            await self._emit(
+                RuntimeEventType.TOOL_FAILED,
+                request,
+                metadata={
+                    "round": round_no,
+                    "tool": tool_call.name,
+                    "status": "batch_rejected",
+                    "requested_tool_calls": len(tool_calls),
+                    "remaining_tool_budget": max(0, remaining_budget),
+                },
+                trace=trace,
+            )
 
     async def _emit(
         self,

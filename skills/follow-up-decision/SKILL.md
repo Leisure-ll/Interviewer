@@ -9,6 +9,7 @@ output_schema: FollowUpDecisionArtifact
 timeout: 2
 retry: 0
 max_tokens: 800
+execution_strategy: structured_llm
 version: 1.0
 ---
 

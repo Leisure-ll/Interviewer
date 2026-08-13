@@ -89,6 +89,11 @@ def _blackboard_from_json(data: dict[str, Any]) -> InterviewBlackboard:
     board.asked_question_ids = set(data.get("asked_question_ids", []))
     board.followed_targets = set(data.get("followed_targets", []))
     board.question_follow_up_rounds = dict(data.get("question_follow_up_rounds", {}))
+    board.review_required = bool(data.get("review_required", False))
+    board.review_status = data.get("review_status", "not_required")
+    board.review_reasons = list(data.get("review_reasons", []))
+    board.review_reviewer = data.get("review_reviewer", "")
+    board.review_decision_reason = data.get("review_decision_reason", "")
     board.runtime_metadata = _runtime_metadata(data.get("runtime_metadata", {}))
     return board
 
