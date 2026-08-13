@@ -120,7 +120,68 @@ async def main() -> None:
 def print_runtime_events(service: InterviewApplicationService, start: int) -> None:
     events = service.runtime.event_bus.events[start:]
     for event in events:
-        if event.type.value == "AGENT_STARTED":
+        if event.type.value == "AGENT_LOOP_STARTED":
+            print(
+                "[LOOP] "
+                f"AGENT_LOOP_STARTED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')}"
+            )
+        elif event.type.value == "LLM_REQUESTED":
+            print(
+                "[LOOP] "
+                f"LLM_REQUESTED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"round={event.metadata.get('round')} "
+                f"tool_count={event.metadata.get('tool_count')}"
+            )
+        elif event.type.value == "LLM_RESPONDED":
+            print(
+                "[LOOP] "
+                f"LLM_RESPONDED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"round={event.metadata.get('round')} "
+                f"finish_reason={event.metadata.get('finish_reason')}"
+            )
+        elif event.type.value == "TOOL_CALLED":
+            print(
+                "[LOOP] "
+                f"TOOL_CALLED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"round={event.metadata.get('round')} "
+                f"tool={event.metadata.get('tool')}"
+            )
+        elif event.type.value == "TOOL_SUCCEEDED":
+            print(
+                "[LOOP] "
+                f"TOOL_SUCCEEDED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"round={event.metadata.get('round')} "
+                f"tool={event.metadata.get('tool')}"
+            )
+        elif event.type.value == "TOOL_FAILED":
+            print(
+                "[LOOP] "
+                f"TOOL_FAILED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"round={event.metadata.get('round')} "
+                f"tool={event.metadata.get('tool')}"
+            )
+        elif event.type.value == "AGENT_LOOP_FINISHED":
+            print(
+                "[LOOP] "
+                f"AGENT_LOOP_FINISHED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"rounds={event.metadata.get('rounds')} "
+                f"tool_calls={event.metadata.get('tool_calls')}"
+            )
+        elif event.type.value == "AGENT_LOOP_STOPPED":
+            print(
+                "[LOOP] "
+                f"AGENT_LOOP_STOPPED agent={event.metadata.get('agent')} "
+                f"skill={event.metadata.get('skill')} "
+                f"reason={event.metadata.get('stop_reason')}"
+            )
+        elif event.type.value == "AGENT_STARTED":
             print(
                 "[AGENT] "
                 f"{event.metadata.get('agent')} skill={event.metadata.get('skill')} "

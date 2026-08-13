@@ -15,6 +15,7 @@ from interview_agent_runtime.checkpoint import CheckpointStore, InMemoryCheckpoi
 from interview_agent_runtime.context import AgentContextBuilder, ContextBudget
 from interview_agent_runtime.harness.config import HarnessConfig
 from interview_agent_runtime.harness.harness import InterviewHarness
+from interview_agent_runtime.memory import InMemorySessionMemory, RecentWindowMemoryCompressor
 from interview_agent_runtime.observability import NoopObserver
 from interview_agent_runtime.providers import FakeLLMProvider, OpenAICompatibleLLMProvider
 from interview_agent_runtime.runtime.events import InMemoryEventBus
@@ -38,7 +39,13 @@ def build_mock_harness(config: HarnessConfig) -> InterviewHarness:
         config=config,
         tool_registry=build_default_tool_registry(),
         checkpoint_store=InMemoryCheckpointStore(),
-        llm_provider=FakeLLMProvider(),
+        llm_provider=FakeLLMProvider(
+            responses=[
+                {"tool_calls": [{"id": "mock_resume", "name": "resume.retrieve", "arguments": {}}]},
+                {"tool_calls": [{"id": "mock_jd", "name": "jd.retrieve", "arguments": {}}]},
+                {},
+            ]
+        ),
     )
 
 
@@ -97,6 +104,8 @@ def _assemble(
         event_bus=InMemoryEventBus(observer=observer),
         observer=observer,
         llm_provider=llm_provider,
+        memory=InMemorySessionMemory(),
+        memory_compressor=RecentWindowMemoryCompressor(),
     )
 
 

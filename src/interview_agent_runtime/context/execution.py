@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional, Set
 
 from interview_agent_runtime.domain import InterviewStage
 
@@ -15,3 +16,4 @@ class ExecutionContext:
     token_budget: int
     timeout_seconds: float
     retry: int
+    session_allowed_tools: Optional[Set[str]] = None

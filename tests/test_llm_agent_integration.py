@@ -37,6 +37,7 @@ async def _profile_case():
         ]
     )
     harness = InterviewHarness.from_config(HarnessConfig.mock())
+    harness.llm_provider = provider
     harness.agent_registry = build_agent_registry(llm_provider=provider)
     runtime = harness.create_runtime("llm-profile")
     board = await runtime.start_session("llm-profile")
@@ -76,6 +77,7 @@ async def _evaluation_case():
         ]
     )
     harness = InterviewHarness.from_config(HarnessConfig.mock())
+    harness.llm_provider = provider
     harness.agent_registry = build_agent_registry(llm_provider=provider)
     runtime = harness.create_runtime("llm-evaluation")
     board = await runtime.start_session("llm-evaluation")
@@ -108,6 +110,7 @@ async def _followup_case():
         ]
     )
     harness = InterviewHarness.from_config(HarnessConfig.mock())
+    harness.llm_provider = provider
     harness.agent_registry = build_agent_registry(llm_provider=provider)
     runtime = harness.create_runtime("llm-followup")
     board = await runtime.start_session("llm-followup")

@@ -84,6 +84,8 @@ def _blackboard_from_json(data: dict[str, Any]) -> InterviewBlackboard:
     board.follow_up_budget = data.get("follow_up_budget", 0)
     board.question_budget = data.get("question_budget", 0)
     board.token_budget = data.get("token_budget", 0)
+    allowed_tools = data.get("session_allowed_tools")
+    board.session_allowed_tools = set(allowed_tools) if allowed_tools is not None else None
     board.asked_question_ids = set(data.get("asked_question_ids", []))
     board.followed_targets = set(data.get("followed_targets", []))
     board.question_follow_up_rounds = dict(data.get("question_follow_up_rounds", {}))

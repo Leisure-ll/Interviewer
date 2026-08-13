@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
-from interview_agent_runtime.agents.base import BaseInterviewAgent
+from interview_agent_runtime.agents.base import AgentRunContext, BaseInterviewAgent
 from interview_agent_runtime.artifacts import (
     AgentArtifact,
     CandidateProfileArtifact,
@@ -30,6 +31,8 @@ from interview_agent_runtime.domain import (
 from interview_agent_runtime.evaluation import EvidenceDrivenEvaluator
 from interview_agent_runtime.prompting import PromptAssembler
 from interview_agent_runtime.providers import LLMProvider
+from interview_agent_runtime.runtime.agent_loop import AgentRunRequest
+from interview_agent_runtime.runtime.events import RuntimeEvent, RuntimeEventType
 from interview_agent_runtime.questioning import QuestionGenerationPipeline
 from interview_agent_runtime.skills import SkillDefinition
 from interview_agent_runtime.tools import ToolContext, ToolExecutor
@@ -47,6 +50,71 @@ class ProfileAgent(BaseInterviewAgent):
     def required_skill(self, context: InterviewBlackboard) -> str:
         return "profile-analysis"
 
+    async def execute_run(self, run_context: AgentRunContext) -> AgentArtifact:
+        if run_context.agent_loop is None:
+            return await super().execute_run(run_context)
+        assert isinstance(run_context.agent_context, ProfileAgentContext)
+        initial_messages = self.prompt_assembler.assemble(
+            skill=run_context.skill,
+            context=run_context.agent_context,
+            output_schema=self.draft_schema,
+        )
+        tool_context = ToolContext(
+            run_context.session_id,
+            self.name,
+            run_context.skill.name,
+            run_context.blackboard,
+        )
+        loop_result = await run_context.agent_loop.run(
+            AgentRunRequest(
+                session_id=run_context.session_id,
+                agent_name=self.name,
+                skill_name=run_context.skill.name,
+                initial_messages=initial_messages,
+                visible_tools=run_context.visible_tools,
+                tool_executor=run_context.tools,
+                tool_context=tool_context,
+                response_schema=self.draft_schema,
+                max_rounds=4,
+                max_tool_calls=4,
+                token_budget=run_context.token_budget,
+                timeout_seconds=run_context.timeout_seconds,
+                memory_key=f"{run_context.session_id}:{self.name}",
+            )
+        )
+        resume, jd = self._tool_inputs(loop_result.messages)
+        if not resume or not jd:
+            if run_context.event_bus is not None:
+                await run_context.event_bus.emit(
+                    RuntimeEvent(
+                        RuntimeEventType.AGENT_FALLBACK_USED,
+                        run_context.session_id,
+                        metadata={
+                            "agent": self.name,
+                            "skill": run_context.skill.name,
+                            "stop_reason": loop_result.stop_reason,
+                        },
+                    )
+                )
+            resume = await run_context.tools.call(
+                "resume.retrieve",
+                {},
+                tool_context,
+                run_context.visible_tools,
+            )
+            jd = await run_context.tools.call(
+                "jd.retrieve",
+                {},
+                tool_context,
+                run_context.visible_tools,
+            )
+        return self._build_artifact(
+            run_context.blackboard,
+            resume,
+            jd,
+            loop_result.parsed or {},
+        )
+
     async def execute(
         self,
         context: InterviewBlackboard,
@@ -60,6 +128,15 @@ class ProfileAgent(BaseInterviewAgent):
         resume = await tools.call("resume.retrieve", {}, tool_context, visible_tools)
         jd = await tools.call("jd.retrieve", {}, tool_context, visible_tools)
         draft = await self._profile_draft(agent_context, skill)
+        return self._build_artifact(context, resume, jd, draft)
+
+    def _build_artifact(
+        self,
+        context: InterviewBlackboard,
+        resume: dict[str, Any],
+        jd: dict[str, Any],
+        draft: dict[str, Any],
+    ) -> CandidateProfileArtifact:
         candidate_data = draft.get("candidate_profile", {}) if isinstance(draft.get("candidate_profile"), dict) else {}
         position_data = draft.get("position_profile", {}) if isinstance(draft.get("position_profile"), dict) else {}
         candidate = CandidateProfile(
@@ -89,6 +166,22 @@ class ProfileAgent(BaseInterviewAgent):
             resume_id=resume.get("resume_id", ""),
             confidence=0.9,
         )
+
+    def _tool_inputs(self, messages: list[Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        resume: dict[str, Any] = {}
+        jd: dict[str, Any] = {}
+        for message in messages:
+            if getattr(message, "role", None).value != "tool":
+                continue
+            try:
+                value = json.loads(message.content or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if message.name == "resume.retrieve" and isinstance(value, dict):
+                resume = value
+            elif message.name == "jd.retrieve" and isinstance(value, dict):
+                jd = value
+        return resume, jd
 
     async def _profile_draft(self, agent_context: ProfileAgentContext, skill: SkillDefinition) -> dict[str, Any]:
         if self.llm_provider is None:

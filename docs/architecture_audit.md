@@ -419,3 +419,120 @@ Langfuse 后续仍保留，职责限定为 LLM/prompt/token/latency trace。
 - `tests/test_runtime_smoke.py`
 
 旧项目暂不修改。下一阶段再把 `harness-evaluation` 里的真实 service 通过 adapter 接入。
+
+## 21. 本轮 AgentLoop / Message / SessionMemory 收敛
+
+本轮新增能力已经进入真实执行路径：
+
+```text
+InterviewRuntime
+  -> Specialist Agent
+  -> Skill
+  -> ToolPolicy visible tools
+  -> AgentLoop
+  -> AgentMessage / LLMRequest
+  -> assistant ToolCall
+  -> ToolExecutor / ToolResult
+  -> tool AgentMessage(tool_call_id)
+  -> next LLM round
+  -> final AgentMessage
+  -> domain Artifact
+  -> Blackboard
+  -> FSM transition
+  -> Checkpoint / Event
+```
+
+### Message Protocol
+
+`messages/models.py` 定义：
+
+- `MessageRole.SYSTEM`
+- `MessageRole.USER`
+- `MessageRole.ASSISTANT`
+- `MessageRole.TOOL`
+- `ToolCall`
+- `AgentMessage`
+
+`AgentMessage` 只表示单个 Agent 内部的 LLM/tool 对话。Agent 之间仍然通过：
+
+```text
+AgentArtifact -> InterviewBlackboard -> Context Projection
+```
+
+协作，不通过自然语言消息互相调用。
+
+### LLM Provider
+
+`LLMProvider.chat(LLMRequest)` 是主协议，`structured_generate()` 仅作为旧 Agent
+兼容入口。`OpenAICompatibleLLMProvider` 支持：
+
+- OpenAI-compatible `tools` function schema
+- assistant `tool_calls`
+- `tool_call_id`
+- finish reason
+- token usage
+
+`FakeLLMProvider` 支持 scripted assistant/tool-call conversation，并记录每个
+`LLMRequest` 的 messages 和 visible ToolSpec。
+
+### AgentLoop
+
+`runtime/agent_loop.py` 负责单个 Agent 的内部执行回合：
+
+- initial messages
+- SessionMemory history
+- LLM request/response
+- visible ToolSpec
+- ToolExecutor / ToolResult
+- correlated tool message
+- max rounds
+- max tool calls
+- token budget
+- timeout
+- provider error stop
+
+停止原因明确为：
+
+```text
+completed
+max_rounds
+tool_budget_exceeded
+token_budget_exceeded
+timeout
+provider_error
+```
+
+### SessionMemory
+
+`SessionMemory` 与 Blackboard 分离：
+
+```text
+SessionMemory
+  = system/user/assistant/tool message history
+
+InterviewBlackboard
+  = CandidateProfile/Plan/Question/Answer/Evaluation/Evidence/Capability/Stage
+```
+
+当前提供 `InMemorySessionMemory` 和 `RecentWindowMemoryCompressor`。
+`CapabilityContextCompressor` 仍然只负责面试能力域上下文，不负责通用消息历史。
+
+### ProfileAgent 真实 Trace
+
+Mock Harness 的 ProfileAgent 通过 AgentLoop 运行：
+
+```text
+ProfileAgent
+  -> profile-analysis
+  -> VisibleTools: resume.retrieve, jd.retrieve
+  -> Round 1: assistant -> resume.retrieve
+  -> tool: resume.retrieve result
+  -> Round 2: assistant -> jd.retrieve
+  -> tool: jd.retrieve result
+  -> Round 3: assistant structured final
+  -> CandidateProfileArtifact
+  -> InterviewBlackboard
+```
+
+如果模型响应不可用或没有产出完整画像，ProfileAgent 发出
+`AGENT_FALLBACK_USED`，再由 Runtime 已授权的 ToolExecutor 执行本地 fallback。

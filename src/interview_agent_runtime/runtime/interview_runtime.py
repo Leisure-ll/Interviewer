@@ -4,11 +4,14 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import uuid4
 
-from interview_agent_runtime.agents import InterviewAgentRegistry
+from interview_agent_runtime.agents import AgentRunContext, InterviewAgentRegistry
 from interview_agent_runtime.artifacts import AgentArtifact, AnswerArtifact
 from interview_agent_runtime.blackboard import InterviewBlackboard
 from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder, ExecutionContext
+from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
+from interview_agent_runtime.providers import LLMProvider
+from interview_agent_runtime.runtime.agent_loop import AgentLoop
 from interview_agent_runtime.runtime.events import InMemoryEventBus, RuntimeEvent, RuntimeEventType
 from interview_agent_runtime.runtime.execution_policy import ExecutionPolicy, TaskExecutor
 from interview_agent_runtime.runtime.state_machine import InterviewStateMachine
@@ -38,6 +41,9 @@ class InterviewRuntime:
         event_bus: InMemoryEventBus,
         executor: TaskExecutor,
         context_builder: AgentContextBuilder,
+        memory: Optional[SessionMemory] = None,
+        llm_provider: Optional[LLMProvider] = None,
+        memory_compressor: Optional[MemoryCompressor] = None,
     ) -> None:
         self.state_machine = state_machine
         self.agent_registry = agent_registry
@@ -49,6 +55,13 @@ class InterviewRuntime:
         self.event_bus = event_bus
         self.executor = executor
         self.context_builder = context_builder
+        self.memory = memory
+        self.llm_provider = llm_provider
+        self.agent_loop = (
+            AgentLoop(llm_provider, memory, event_bus, memory_compressor)
+            if llm_provider is not None and memory is not None
+            else None
+        )
 
     async def start_session(
         self,
@@ -57,6 +70,7 @@ class InterviewRuntime:
         resume: Optional[dict[str, Any]] = None,
         jd: Optional[dict[str, Any]] = None,
         candidate_id: Optional[str] = None,
+        session_allowed_tools: Optional[set[str]] = None,
     ) -> InterviewBlackboard:
         board = InterviewBlackboard(session_id=session_id or f"session_{uuid4().hex[:12]}")
         board.session_inputs = {
@@ -64,6 +78,9 @@ class InterviewRuntime:
             "jd": jd or {},
             "candidate_id": candidate_id,
         }
+        board.session_allowed_tools = (
+            set(session_allowed_tools) if session_allowed_tools is not None else None
+        )
         await self.checkpoint_store.save(board)
         await self.event_bus.emit(RuntimeEvent(RuntimeEventType.SESSION_STARTED, board.session_id))
         return board
@@ -133,7 +150,11 @@ class InterviewRuntime:
             raise RuntimeError(f"Agent refused stage {previous.value}: {decision.reason}")
 
         skill = self.skill_registry.resolve(agent.required_skill(context))
-        visible_tools = self.tool_policy.authorize(agent.name, skill)
+        visible_tools = self.tool_policy.authorize(
+            agent.name,
+            skill,
+            context.session_allowed_tools,
+        )
         policy = ExecutionPolicy(timeout_seconds=skill.timeout, retry=skill.retry, name=f"{agent.name}:{skill.name}")
         execution_context = ExecutionContext(
             session_id=session_id,
@@ -144,6 +165,7 @@ class InterviewRuntime:
             token_budget=skill.max_tokens,
             timeout_seconds=skill.timeout,
             retry=skill.retry,
+            session_allowed_tools=context.session_allowed_tools,
         )
         agent_context = self.context_builder.build(agent.name, context, execution_context)
         await self.event_bus.emit(
@@ -160,10 +182,20 @@ class InterviewRuntime:
             )
         )
 
-        result = await self.executor.execute(
-            lambda: agent.execute(context, agent_context, skill, self.tool_executor, visible_tools),
-            policy,
+        run_context = AgentRunContext(
+            session_id=session_id,
+            blackboard=context,
+            agent_context=agent_context,
+            skill=skill,
+            visible_tools=visible_tools,
+            token_budget=skill.max_tokens,
+            timeout_seconds=skill.timeout,
+            retry=skill.retry,
+            tools=self.tool_executor,
+            agent_loop=self.agent_loop,
+            event_bus=self.event_bus,
         )
+        result = await self.executor.execute(lambda: agent.execute_run(run_context), policy)
         if not result.ok or result.value is None:
             context.runtime_metadata.errors.append(str(result.error))
             context.current_stage = InterviewStage.FAILED

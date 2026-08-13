@@ -171,14 +171,17 @@ points, missing points, evidence confidence, and answer specificity.
 The report is generated from `InterviewPlan`, `CapabilityProfile`, dimension scores,
 and accumulated evidence, not from a plain chat transcript.
 
-## LLM Provider Boundary
+## LLM Provider and AgentLoop
 
-The current code includes a lightweight provider boundary for real model integration:
+The current code includes a typed provider boundary and a K-inspired AgentLoop:
 
-- `LLMProvider` protocol with `structured_generate()`.
+- `AgentMessage` with `system`, `user`, `assistant`, and `tool` roles.
+- `ToolCall` and correlated `tool_call_id` tool messages.
+- `LLMRequest` / `LLMResponse` and `LLMProvider.chat()`.
 - `FakeLLMProvider` for tests and local demo.
 - `OpenAICompatibleLLMProvider` with configurable `base_url`, `api_key`, and `model`.
-- `PromptAssembler` combines `Skill.prompt`, typed `AgentContext`, and output schema instructions.
+- OpenAI-compatible function tool schema conversion and tool-call response parsing.
+- `PromptAssembler` returns initial typed `AgentMessage` values.
 - `ProfileAgent`, `EvaluatorAgent`, and `FollowUpAgent` can consume structured LLM drafts.
 
 LLM draft schemas are separate from final artifact schemas. For example, `EvaluatorAgent`
@@ -186,6 +189,35 @@ can request an `EvaluationDraft`, then `EvidenceDrivenEvaluator` and `ScorePolic
 that draft into an `EvaluationArtifact`. Agents keep a deterministic fallback path when
 LLM output is empty, malformed, or unavailable. Runtime/FSM/budget/guard logic is not
 delegated to LLMs.
+
+`AgentLoop` is the only component that manages one Agent's internal LLM/tool conversation:
+
+```text
+initial AgentMessage
+  -> LLMResponse(assistant/tool_calls)
+  -> ToolPolicy-visible ToolSpec
+  -> ToolExecutor
+  -> AgentMessage(role=tool, tool_call_id=...)
+  -> next LLM round
+  -> final AgentMessage
+  -> domain Artifact
+```
+
+The loop stops on `completed`, `max_rounds`, `tool_budget_exceeded`,
+`token_budget_exceeded`, `timeout`, or `provider_error`.
+
+`SessionMemory` stores only Agent/LLM interaction messages. It is separate from
+`InterviewBlackboard`, which stores interview domain facts and Artifacts. A recent-window
+memory compressor is available for message history; `CapabilityContextCompressor` remains
+the domain-specific capability summary compressor.
+
+The mock Harness scripts the ProfileAgent path so the local Demo exercises:
+
+```text
+Round 1: assistant -> resume.retrieve
+Round 2: assistant -> jd.retrieve
+Round 3: assistant -> structured profile final
+```
 
 ## Skill Runtime
 
@@ -204,7 +236,8 @@ Runtime validates that the artifact class returned by an agent matches the skill
 
 ## Tool Governance
 
-Tools remain behind `ToolRegistry` and `ToolPolicy`. Agent visible tools are computed by:
+Tools remain behind `ToolRegistry`, `ToolSpec`, `ToolExecutor`, and `ToolPolicy`. Agent
+visible tools are computed by:
 
 ```text
 Agent allowed tools ∩ Skill declared tools ∩ Session policy
@@ -212,6 +245,25 @@ Agent allowed tools ∩ Skill declared tools ∩ Session policy
 
 The default tools are fake adapters for local execution. Real Qdrant, MySQL, Redis,
 LLM, ASR, TTS, and digital-human integrations should be connected as adapters.
+
+`ToolExecutor` returns `ToolResult` with `tool_call_id`, `tool_name`, success state,
+value/error, and duration. Unauthorized ToolCalls are rejected even if proposed by
+the model.
+
+## Architecture Sources
+
+The implementation is inspired by, but does not copy, the two reference architectures:
+
+- Kugelblitz-inspired: AgentLoop, visible tool whitelist, Skill/Tool runtime,
+  execution limits, SessionMemory, Checkpoint, and Observer.
+- MindBridge-inspired: typed AgentMessage for internal LLM communication,
+  Specialist Agent, Artifact, Blackboard, and structured collaboration.
+- Interviewer-owned domain: Interview FSM, InterviewPlan, Evidence, CapabilityProfile,
+  adaptive follow-up, and evidence-driven reporting.
+
+`AgentMessage` is internal to one AgentLoop. Specialist Agents still collaborate only
+through `Artifact -> Blackboard -> Context Projection`; messages are not an Agent-to-Agent
+communication protocol.
 
 ## Checkpoint Recovery
 

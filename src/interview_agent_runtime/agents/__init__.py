@@ -1,4 +1,4 @@
-from .base import AgentDecision, BaseInterviewAgent, InterviewAgentRegistry
+from .base import AgentDecision, AgentRunContext, BaseInterviewAgent, InterviewAgentRegistry
 from .mock_agents import (
     EvaluatorAgent,
     FollowUpAgent,
@@ -10,6 +10,7 @@ from .mock_agents import (
 
 __all__ = [
     "AgentDecision",
+    "AgentRunContext",
     "BaseInterviewAgent",
     "InterviewAgentRegistry",
     "EvaluatorAgent",

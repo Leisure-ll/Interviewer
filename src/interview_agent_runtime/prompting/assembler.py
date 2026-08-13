@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from interview_agent_runtime.context import AgentContext
+from interview_agent_runtime.messages import AgentMessage
 from interview_agent_runtime.skills import SkillDefinition
 
 
@@ -15,15 +16,11 @@ class PromptAssembler:
         skill: SkillDefinition,
         context: AgentContext,
         output_schema: str,
-    ) -> list[dict[str, str]]:
+    ) -> list[AgentMessage]:
         return [
-            {
-                "role": "system",
-                "content": skill.prompt or skill.description,
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
+            AgentMessage.system(skill.prompt or skill.description),
+            AgentMessage.user(
+                json.dumps(
                     {
                         "context_type": type(context).__name__,
                         "context": _to_json(context),
@@ -31,8 +28,8 @@ class PromptAssembler:
                         "instruction": "Return one valid JSON object only.",
                     },
                     ensure_ascii=False,
-                ),
-            },
+                )
+            ),
         ]
 
 

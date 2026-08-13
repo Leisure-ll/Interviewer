@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Set
 
 from interview_agent_runtime.artifacts import (
     AgentArtifact,
@@ -50,6 +50,7 @@ class InterviewBlackboard:
     follow_up_budget: int = 0
     question_budget: int = 0
     token_budget: int = 0
+    session_allowed_tools: Optional[Set[str]] = None
     asked_question_ids: set[str] = field(default_factory=set)
     followed_targets: set[str] = field(default_factory=set)
     question_follow_up_rounds: dict[str, int] = field(default_factory=dict)

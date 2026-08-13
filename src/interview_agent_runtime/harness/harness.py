@@ -6,6 +6,7 @@ from interview_agent_runtime.agents import InterviewAgentRegistry
 from interview_agent_runtime.checkpoint import CheckpointStore
 from interview_agent_runtime.context import AgentContextBuilder
 from interview_agent_runtime.harness.config import HarnessConfig
+from interview_agent_runtime.memory import MemoryCompressor, SessionMemory
 from interview_agent_runtime.observability import Observer
 from interview_agent_runtime.providers import LLMProvider
 from interview_agent_runtime.runtime import InterviewRuntime
@@ -30,6 +31,8 @@ class InterviewHarness:
         event_bus: InMemoryEventBus,
         observer: Observer,
         llm_provider: Optional[LLMProvider] = None,
+        memory: Optional[SessionMemory] = None,
+        memory_compressor: Optional[MemoryCompressor] = None,
     ) -> None:
         self.config = config
         self.agent_registry = agent_registry
@@ -41,6 +44,8 @@ class InterviewHarness:
         self.event_bus = event_bus
         self.observer = observer
         self.llm_provider = llm_provider
+        self.memory = memory
+        self.memory_compressor = memory_compressor
 
     @classmethod
     def from_config(cls, config: Optional[HarnessConfig] = None) -> "InterviewHarness":
@@ -60,4 +65,7 @@ class InterviewHarness:
             event_bus=self.event_bus,
             executor=TaskExecutor(),
             context_builder=self.context_builder,
+            memory=self.memory,
+            llm_provider=self.llm_provider,
+            memory_compressor=self.memory_compressor,
         )
